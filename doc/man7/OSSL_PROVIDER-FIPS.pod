@@ -6,8 +6,8 @@ OSSL_PROVIDER-FIPS - OpenSSL FIPS provider
 
 =head1 DESCRIPTION
 
-The OpenSSL FIPS provider is a special provider that conforms to the Federal 
-Information Processing Standards (FIPS) specified in FIPS 140-2. This 'module'
+The OpenSSL FIPS provider is a special provider that conforms to the Federal
+Information Processing Standards (FIPS) specified in FIPS 140-3. This 'module'
 contains an approved set of cryptographic algorithms that is validated by an
 accredited testing laboratory.
 
@@ -18,7 +18,7 @@ defined:
 
 =over 4
 
-=item "provider=default"
+=item "provider=fips"
 
 =item "fips=yes"
 
@@ -29,14 +29,32 @@ L<EVP_MD_fetch(3)> or L<EVP_CIPHER_fetch(3)>, as well as with other
 functions that take a property query string, such as
 L<EVP_PKEY_CTX_new_from_name(3)>.
 
-It isn't mandatory to query for any of these properties, except to
-make sure to get implementations of this provider and none other.
+To be FIPS compliant, it is mandatory to include C<fips=yes> as
+part of all property queries.  This ensures that only FIPS approved
+implementations are used for cryptographic operations.  The C<fips=yes>
+query may also include other non-crypto support operations that
+are not in the FIPS provider, such as asymmetric key encoders, see
+L<OSSL_PROVIDER-default(7)/Asymmetric Key Management>.
 
-The "fips=yes" property can be use to make sure only FIPS approved
-implementations are used for crypto operations.  This may also include
-other non-crypto support operations that are not in the fips provider,
-such as asymmetric key encoders,
-see L<OSSL_PROVIDER-default(7)/Asymmetric Key Management>.
+It is not mandatory to include C<provider=fips> as part of your property
+query.  Including C<provider=fips> in your property query guarantees
+that the OpenSSL FIPS provider is used for cryptographic operations
+rather than other FIPS capable providers.
+
+=head2 Provider parameters
+
+See L<provider-base(7)/Provider parameters> for a list of base parameters.
+Additionally the OpenSSL FIPS provider also supports the following gettable
+parameters:
+
+=over 4
+
+=item "security-checks" (B<OSSL_OSSL_PROV_PARAM_SECURITY_CHECKS>) <unsigned integer>
+
+For further information refer to the L<openssl-fipsinstall(1)> option
+B<-no_security_checks>.
+
+=back
 
 =head1 OPERATIONS AND ALGORITHMS
 
@@ -54,6 +72,8 @@ The OpenSSL FIPS provider supports these operations and algorithms:
 
 =item KECCAK-KMAC, see L<EVP_MD-KECCAK-KMAC(7)>
 
+=item SHAKE, see L<EVP_MD-SHAKE(7)>
+
 =back
 
 =head2 Symmetric Ciphers
@@ -62,7 +82,9 @@ The OpenSSL FIPS provider supports these operations and algorithms:
 
 =item AES, see L<EVP_CIPHER-AES(7)>
 
-=item DES-EDE3 (TrippleDES), see L<EVP_CIPHER-DES(7)>
+=item 3DES, see L<EVP_CIPHER-DES(7)>
+
+This is an unapproved algorithm.
 
 =back
 
@@ -86,15 +108,17 @@ The OpenSSL FIPS provider supports these operations and algorithms:
 
 =item HKDF, see L<EVP_KDF-HKDF(7)>
 
-=item SSKDF, see L<EVP_KDF-SSKDF(7)>
+=item TLS13-KDF, see L<EVP_KDF-TLS13_KDF(7)>
+
+=item SSKDF, see L<EVP_KDF-SS(7)>
 
 =item PBKDF2, see L<EVP_KDF-PBKDF2(7)>
 
 =item SSHKDF, see L<EVP_KDF-SSHKDF(7)>
 
-=item TLS1-PRF, see L<EVP_KDF-TLS1-PRF(7)>
+=item TLS1-PRF, see L<EVP_KDF-TLS1_PRF(7)>
 
-=item KBKDF, see L<EVP_KDF-KBKDF(7)>
+=item KBKDF, see L<EVP_KDF-KB(7)>
 
 =item X942KDF-ASN1, see L<EVP_KDF-X942-ASN1(7)>
 
@@ -114,11 +138,11 @@ The OpenSSL FIPS provider supports these operations and algorithms:
 
 =item X25519, see L<EVP_KEYEXCH-X25519(7)>
 
-This has the property "provider=fips,fips=no"
-
 =item X448, see L<EVP_KEYEXCH-X448(7)>
 
-This has the property "provider=fips,fips=no"
+=item TLS1-PRF
+
+=item HKDF
 
 =back
 
@@ -126,9 +150,19 @@ This has the property "provider=fips,fips=no"
 
 =over 4
 
-=item DSA, see L<EVP_KEYEXCH-DSA(7)>
-
 =item RSA, see L<EVP_SIGNATURE-RSA(7)>
+
+=item DSA, see L<EVP_SIGNATURE-DSA(7)>
+
+=item ED25519, see L<EVP_SIGNATURE-ED25519(7)>
+
+This is an unapproved algorithm.
+
+=item ED448, see L<EVP_SIGNATURE-ED448(7)>
+
+This is an unapproved algorithm.
+
+=item ECDSA, see L<EVP_SIGNATURE-ECDSA(7)>
 
 =item HMAC, see L<EVP_SIGNATURE-HMAC(7)>
 
@@ -140,7 +174,7 @@ This has the property "provider=fips,fips=no"
 
 =over 4
 
-=item RSA, see L<EVP_KEYEXCH-RSA(7)>
+=item RSA, see L<EVP_ASYM_CIPHER-RSA(7)>
 
 =back
 
@@ -158,9 +192,51 @@ This has the property "provider=fips,fips=no"
 
 =item DH, see L<EVP_KEYMGMT-DH(7)>
 
+=item DHX, see L<EVP_KEYMGMT-DHX(7)>
+
 =item DSA, see L<EVP_KEYMGMT-DSA(7)>
 
 =item RSA, see L<EVP_KEYMGMT-RSA(7)>
+
+=item RSA-PSS
+
+=item EC, see L<EVP_KEYMGMT-EC(7)>
+
+=item X25519, see L<EVP_KEYMGMT-X25519(7)>
+
+=item X448, see L<EVP_KEYMGMT-X448(7)>
+
+=item ED25519, see L<EVP_KEYMGMT-ED25519(7)>
+
+This is an unapproved algorithm.
+
+=item ED448, see L<EVP_KEYMGMT-ED448(7)>
+
+This is an unapproved algorithm.
+
+=item TLS1-PRF
+
+=item HKDF
+
+=item HMAC, see L<EVP_KEYMGMT-HMAC(7)>
+
+=item CMAC, see L<EVP_KEYMGMT-CMAC(7)>
+
+=back
+
+=head2 Random Number Generation
+
+=over 4
+
+=item CTR-DRBG, see L<EVP_RAND-CTR-DRBG(7)>
+
+=item HASH-DRBG, see L<EVP_RAND-HASH-DRBG(7)>
+
+=item HMAC-DRBG, see L<EVP_RAND-HMAC-DRBG(7)>
+
+=item TEST-RAND, see L<EVP_RAND-TEST-RAND(7)>
+
+TEST-RAND is an unapproved algorithm.
 
 =back
 
@@ -212,6 +288,10 @@ Known answer test for a digest.
 
 Known answer test for a signature.
 
+=item "PCT_Signature" (B<OSSL_SELF_TEST_TYPE_PCT_SIGNATURE>)
+
+Pairwise Consistency check for a signature.
+
 =item "KAT_KDF" (B<OSSL_SELF_TEST_TYPE_KAT_KDF>)
 
 Known answer test for a key derivation function.
@@ -224,7 +304,7 @@ Known answer test for key agreement.
 
 Known answer test for a Deterministic Random Bit Generator.
 
-=item "Pairwise_Consistency_Test" (B<OSSL_SELF_TEST_TYPE_PCT>)
+=item "Conditional_PCT" (B<OSSL_SELF_TEST_TYPE_PCT>)
 
 Conditional test that is run during the generation of key pairs.
 
@@ -267,7 +347,7 @@ Key generation tests used with the "Pairwise_Consistency_Test" type.
 
 "KAT_AsymmetricCipher" uses this to indicate an encrypt or decrypt KAT.
 
-=item "AES_GCM_Encrypt" (B<OSSL_SELF_TEST_DESC_CIPHER_AES_GCM>)
+=item "AES_GCM" (B<OSSL_SELF_TEST_DESC_CIPHER_AES_GCM>)
 
 =item "AES_ECB_Decrypt" (B<OSSL_SELF_TEST_DESC_CIPHER_AES_ECB>)
 
@@ -298,6 +378,10 @@ Signature tests used with the "KAT_Signature" type.
 Key agreement tests used with the "KAT_KA" type.
 
 =item "HKDF" (B<OSSL_SELF_TEST_DESC_KDF_HKDF>)
+
+=item "TLS13_KDF_EXTRACT" (B<OSSL_SELF_TEST_DESC_KDF_TLS13_EXTRACT>)
+
+=item "TLS13_KDF_EXPAND" (B<OSSL_SELF_TEST_DESC_KDF_TLS13_EXPAND>)
 
 =item "SSKDF" (B<OSSL_SELF_TEST_DESC_KDF_SSKDF>)
 
@@ -376,6 +460,33 @@ A simple self test callback is shown below for illustrative purposes.
     return ret;
   }
 
+=head1 NOTES
+
+Some released versions of OpenSSL do not include a validated
+FIPS provider.  To determine which versions have undergone
+the validation process, please refer to the
+L<OpenSSL Downloads page|https://www.openssl.org/source/>.  If you
+require FIPS-approved functionality, it is essential to build your FIPS
+provider using one of the validated versions listed there.  Normally,
+it is possible to utilize a FIPS provider constructed from one of the
+validated versions alongside F<libcrypto> and F<libssl> compiled from any
+release within the same major release series.  This flexibility enables
+you to address bug fixes and CVEs that fall outside the FIPS boundary.
+
+The FIPS provider in OpenSSL 3.1 includes some non-FIPS validated algorithms,
+consequently the property query C<fips=yes> is mandatory for applications that
+want to operate in a FIPS approved manner.  The algorithms are:
+
+=over 4
+
+=item Triple DES ECB
+
+=item Triple DES CBC
+
+=item EdDSA
+
+=back
+
 =head1 SEE ALSO
 
 L<openssl-fipsinstall(1)>,
@@ -385,15 +496,16 @@ L<OSSL_SELF_TEST_new(3)>,
 L<OSSL_PARAM(3)>,
 L<openssl-core.h(7)>,
 L<openssl-core_dispatch.h(7)>,
-L<provider(7)>
+L<provider(7)>,
+L<https://www.openssl.org/source/>
 
 =head1 HISTORY
 
-The type and functions described here were added in OpenSSL 3.0.
+This functionality was added in OpenSSL 3.0.
 
 =head1 COPYRIGHT
 
-Copyright 2019-2020 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2019-2023 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

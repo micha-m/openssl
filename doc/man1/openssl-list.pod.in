@@ -12,13 +12,16 @@ B<openssl list>
 [B<-verbose>]
 [B<-select> I<name>]
 [B<-1>]
+[B<-all-algorithms>]
 [B<-commands>]
+[B<-standard-commands>]
 [B<-digest-algorithms>]
 {- output_off() if $disabled{"deprecated-3.0"}; ""
 -}[B<-digest-commands>]
 {- output_on() if $disabled{"deprecated-3.0"}; ""
 -}[B<-kdf-algorithms>]
 [B<-mac-algorithms>]
+[B<-random-instances>]
 [B<-random-generators>]
 [B<-cipher-algorithms>]
 {- output_off() if $disabled{"deprecated-3.0"}; ""
@@ -33,6 +36,7 @@ B<openssl list>
 [B<-asymcipher-algorithms>]
 [B<-public-key-algorithms>]
 [B<-public-key-methods>]
+[B<-store-loaders>]
 [B<-providers>]
 {- output_off() if $disabled{"deprecated-3.0"}; ""
 -}[B<-engines>]
@@ -69,9 +73,47 @@ Only list algorithms that match this name.
 List the commands, digest-commands, or cipher-commands in a single column.
 If used, this option must be given first.
 
+=item B<-all-algorithms>
+
+Display lists of all algorithms.  These include:
+
+=over 4
+
+=item Asymmetric ciphers
+
+=item Decoders
+
+=item Digests
+
+=item Encoders
+
+=item Key derivation algorithms (KDF)
+
+=item Key encapsulation methods (KEM)
+
+=item Key exchange algorithms (KEX)
+
+=item Key managers
+
+=item Message authentication code algorithms (MAC)
+
+=item Random number generators (RNG, DRBG)
+
+=item Signature algorithms
+
+=item Store loaders
+
+=item Symmetric ciphers
+
+=back
+
 =item B<-commands>
 
 Display a list of standard commands.
+
+=item B<-standard-commands>
+
+List of standard commands.
 
 =item B<-digest-commands>
 
@@ -87,15 +129,19 @@ This option is deprecated. Use B<cipher-algorithms> instead.
 Display a list of cipher commands, which are typically used as input
 to the L<openssl-enc(1)> or L<openssl-speed(1)> commands.
 
-=item B<-digest-algorithms>, B<-kdf-algorithms>, B<-mac-algorithms>,
-B<-cipher-algorithms>
+=item B<-cipher-algorithms>, B<-digest-algorithms>, B<-kdf-algorithms>,
+B<-mac-algorithms>,
 
-Display a list of cipher, digest, kdf and mac algorithms.
+Display a list of symmetric cipher, digest, kdf and mac algorithms.
 See L</Display of algorithm names> for a description of how names are
 displayed.
 
 In verbose mode, the algorithms provided by a provider will get additional
 information on what parameters each implementation supports.
+
+=item B<-random-instances>
+
+List the primary, public and private random number generator details.
 
 =item B<-random-generators>
 
@@ -151,6 +197,10 @@ Display a list of signature algorithms.
 =item B<-asymcipher-algorithms>
 
 Display a list of asymmetric cipher algorithms.
+
+=item B<-store-loaders>
+
+Display a list of store loaders.
 
 =item B<-providers>
 
@@ -222,7 +272,7 @@ were deprecated in OpenSSL 3.0.
 
 =head1 COPYRIGHT
 
-Copyright 2016-2020 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2016-2021 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

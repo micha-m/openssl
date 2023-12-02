@@ -36,10 +36,8 @@ int ASN1_digest(i2d_of_void *i2d, const EVP_MD *type, char *data,
         ERR_raise(ERR_LIB_ASN1, ERR_R_INTERNAL_ERROR);
         return 0;
     }
-    if ((str = OPENSSL_malloc(inl)) == NULL) {
-        ERR_raise(ERR_LIB_ASN1, ERR_R_MALLOC_FAILURE);
+    if ((str = OPENSSL_malloc(inl)) == NULL)
         return 0;
-    }
     p = str;
     i2d(data, &p);
 
@@ -65,18 +63,18 @@ int ossl_asn1_item_digest_ex(const ASN1_ITEM *it, const EVP_MD *md, void *asn,
     if (i < 0 || str == NULL)
         return 0;
 
-    if (EVP_MD_provider(md) == NULL) {
+    if (EVP_MD_get0_provider(md) == NULL) {
 #if !defined(OPENSSL_NO_ENGINE)
-        ENGINE *tmpeng = ENGINE_get_digest_engine(EVP_MD_type(md));
+        ENGINE *tmpeng = ENGINE_get_digest_engine(EVP_MD_get_type(md));
 
         if (tmpeng != NULL)
             ENGINE_finish(tmpeng);
         else
 #endif
-            fetched_md = EVP_MD_fetch(libctx, EVP_MD_name(md), propq);
+            fetched_md = EVP_MD_fetch(libctx, EVP_MD_get0_name(md), propq);
     }
-     if (fetched_md == NULL)
-         goto err;
+    if (fetched_md == NULL)
+        goto err;
 
     ret = EVP_Digest(str, i, data, len, fetched_md, NULL);
 err:

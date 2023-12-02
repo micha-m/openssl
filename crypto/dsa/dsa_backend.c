@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2020-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -15,7 +15,11 @@
 
 #include <openssl/core_names.h>
 #include <openssl/err.h>
+#ifndef FIPS_MODULE
+# include <openssl/x509.h>
+#endif
 #include "crypto/dsa.h"
+#include "dsa_local.h"
 
 /*
  * The intention with the "backend" source file is to offer backend support
@@ -23,16 +27,19 @@
  * implementations alike.
  */
 
-int ossl_dsa_key_fromdata(DSA *dsa, const OSSL_PARAM params[])
+int ossl_dsa_key_fromdata(DSA *dsa, const OSSL_PARAM params[],
+                          int include_private)
 {
-    const OSSL_PARAM *param_priv_key, *param_pub_key;
+    const OSSL_PARAM *param_priv_key = NULL, *param_pub_key;
     BIGNUM *priv_key = NULL, *pub_key = NULL;
 
     if (dsa == NULL)
         return 0;
 
-    param_priv_key =
-        OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_PRIV_KEY);
+    if (include_private) {
+        param_priv_key =
+            OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_PRIV_KEY);
+    }
     param_pub_key =
         OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_PUB_KEY);
 
@@ -54,6 +61,62 @@ int ossl_dsa_key_fromdata(DSA *dsa, const OSSL_PARAM params[])
     BN_clear_free(priv_key);
     BN_free(pub_key);
     return 0;
+}
+
+int ossl_dsa_is_foreign(const DSA *dsa)
+{
+#ifndef FIPS_MODULE
+    if (dsa->engine != NULL || DSA_get_method((DSA *)dsa) != DSA_OpenSSL())
+        return 1;
+#endif
+    return 0;
+}
+
+static ossl_inline int dsa_bn_dup_check(BIGNUM **out, const BIGNUM *f)
+{
+    if (f != NULL && (*out = BN_dup(f)) == NULL)
+        return 0;
+    return 1;
+}
+
+DSA *ossl_dsa_dup(const DSA *dsa, int selection)
+{
+    DSA *dupkey = NULL;
+
+    /* Do not try to duplicate foreign DSA keys */
+    if (ossl_dsa_is_foreign(dsa))
+        return NULL;
+
+    if ((dupkey = ossl_dsa_new(dsa->libctx)) == NULL)
+        return NULL;
+
+    if ((selection & OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS) != 0
+        && !ossl_ffc_params_copy(&dupkey->params, &dsa->params))
+        goto err;
+
+    dupkey->flags = dsa->flags;
+
+    if ((selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0
+        && ((selection & OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS) == 0
+            || !dsa_bn_dup_check(&dupkey->pub_key, dsa->pub_key)))
+        goto err;
+
+    if ((selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0
+        && ((selection & OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS) == 0
+            || !dsa_bn_dup_check(&dupkey->priv_key, dsa->priv_key)))
+        goto err;
+
+#ifndef FIPS_MODULE
+    if (!CRYPTO_dup_ex_data(CRYPTO_EX_INDEX_DSA,
+                            &dupkey->ex_data, &dsa->ex_data))
+        goto err;
+#endif
+
+    return dupkey;
+
+ err:
+    DSA_free(dupkey);
+    return NULL;
 }
 
 #ifndef FIPS_MODULE
@@ -95,11 +158,11 @@ DSA *ossl_dsa_key_from_pkcs8(const PKCS8_PRIV_KEY_INFO *p8inf,
     }
     /* Calculate public key */
     if ((dsa_pubkey = BN_new()) == NULL) {
-        ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DSA, ERR_R_BN_LIB);
         goto dsaerr;
     }
     if ((ctx = BN_CTX_new()) == NULL) {
-        ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DSA, ERR_R_BN_LIB);
         goto dsaerr;
     }
 
@@ -110,7 +173,10 @@ DSA *ossl_dsa_key_from_pkcs8(const PKCS8_PRIV_KEY_INFO *p8inf,
         ERR_raise(ERR_LIB_DSA, DSA_R_BN_ERROR);
         goto dsaerr;
     }
-    DSA_set0_key(dsa, dsa_pubkey, dsa_privkey);
+    if (!DSA_set0_key(dsa, dsa_pubkey, dsa_privkey)) {
+        ERR_raise(ERR_LIB_DSA, ERR_R_INTERNAL_ERROR);
+        goto dsaerr;
+    }
 
     goto done;
 

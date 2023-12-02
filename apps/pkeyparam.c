@@ -17,7 +17,7 @@
 #include <openssl/evp.h>
 
 typedef enum OPTION_choice {
-    OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
+    OPT_COMMON,
     OPT_IN, OPT_OUT, OPT_TEXT, OPT_NOOUT,
     OPT_ENGINE, OPT_CHECK,
     OPT_PROV_ENUM
@@ -91,8 +91,7 @@ int pkeyparam_main(int argc, char **argv)
     }
 
     /* No extra arguments. */
-    argc = opt_num_rest();
-    if (argc != 0)
+    if (!opt_check_rest_arg(NULL))
         goto opthelp;
 
     in = bio_open_default(infile, 'r', FORMAT_PEM);
@@ -101,7 +100,8 @@ int pkeyparam_main(int argc, char **argv)
     out = bio_open_default(outfile, 'w', FORMAT_PEM);
     if (out == NULL)
         goto end;
-    pkey = PEM_read_bio_Parameters(in, NULL);
+    pkey = PEM_read_bio_Parameters_ex(in, NULL, app_get0_libctx(),
+                                      app_get0_propq());
     if (pkey == NULL) {
         BIO_printf(bio_err, "Error reading parameters\n");
         ERR_print_errors(bio_err);
@@ -109,7 +109,11 @@ int pkeyparam_main(int argc, char **argv)
     }
 
     if (check) {
-        ctx = EVP_PKEY_CTX_new(pkey, e);
+        if (e == NULL)
+            ctx = EVP_PKEY_CTX_new_from_pkey(app_get0_libctx(), pkey,
+                                             app_get0_propq());
+        else
+            ctx = EVP_PKEY_CTX_new(pkey, e);
         if (ctx == NULL) {
             ERR_print_errors(bio_err);
             goto end;

@@ -27,6 +27,14 @@ provider-storemgmt - The OSSL_STORE library E<lt>-E<gt> provider functions
  int OSSL_FUNC_store_export_object
      (void *loaderctx, const void *objref, size_t objref_sz,
       OSSL_CALLBACK *export_cb, void *export_cbarg);
+ void *OSSL_FUNC_store_open_ex(void *provctx, const char *uri,
+                               const OSSL_PARAM params[],
+                               OSSL_PASSPHRASE_CALLBACK *pw_cb,
+                               void *pw_cbarg);
+
+ int OSSL_FUNC_store_delete(void *provctx, const char *uri,
+                    const OSSL_PARAM params[],
+                    OSSL_PASSPHRASE_CALLBACK *pw_cb, void *pw_cbarg);
 
 =head1 DESCRIPTION
 
@@ -44,22 +52,22 @@ OSSL_FUNC_store_export_object() (which exports the object in parameterized
 form).
 
 All "functions" mentioned here are passed as function pointers between
-F<libcrypto> and the provider in B<OSSL_DISPATCH> arrays via
-B<OSSL_ALGORITHM> arrays that are returned by the provider's
+F<libcrypto> and the provider in L<OSSL_DISPATCH(3)> arrays via
+L<OSSL_ALGORITHM(3)> arrays that are returned by the provider's
 provider_query_operation() function
 (see L<provider-base(7)/Provider Functions>).
 
 All these "functions" have a corresponding function type definition named
 B<OSSL_FUNC_{name}_fn>, and a helper function to retrieve the function pointer
-from a B<OSSL_DISPATCH> element named B<OSSL_get_{name}>.
-For example, the "function" OSSL_FUNC_store_load() has these:
+from a L<OSSL_DISPATCH(3)> element named B<OSSL_get_{name}>.
+For example, the "function" OSSL_FUNC_store_attach() has these:
 
- typedef void *(OSSL_OSSL_FUNC_store_load_fn)(void *provctx,
-                                              const OSSL_PARAM params[]);
- static ossl_inline OSSL_OSSL_FUNC_store_load_fn
-     OSSL_OSSL_FUNC_store_load(const OSSL_DISPATCH *opf);
+ typedef void *(OSSL_FUNC_store_attach_fn)(void *provctx,
+                                           OSSL_CORE_BIO * bio);
+ static ossl_inline OSSL_FUNC_store_attach_fn
+     OSSL_FUNC_store_attach(const OSSL_DISPATCH *opf);
 
-B<OSSL_DISPATCH> arrays are indexed by numbers that are provided as macros
+L<OSSL_DISPATCH(3)> arrays are indexed by numbers that are provided as macros
 in L<openssl-core_dispatch.h(7)>, as follows:
 
  OSSL_FUNC_store_open                 OSSL_FUNC_STORE_OPEN
@@ -70,6 +78,8 @@ in L<openssl-core_dispatch.h(7)>, as follows:
  OSSL_FUNC_store_eof                  OSSL_FUNC_STORE_EOF
  OSSL_FUNC_store_close                OSSL_FUNC_STORE_CLOSE
  OSSL_FUNC_store_export_object        OSSL_FUNC_STORE_EXPORT_OBJECT
+ OSSL_FUNC_store_delete               OSSL_FUNC_STORE_DELETE
+ OSSL_FUNC_store_open_ex              OSSL_FUNC_STORE_OPEN_EX
 
 =head2 Functions
 
@@ -82,7 +92,7 @@ B<BIO> I<bio> attached.  This is an alternative to using a URI to find storage,
 supporting L<OSSL_STORE_attach(3)>.
 
 OSSL_FUNC_store_settable_ctx_params() should return a constant array of
-descriptor B<OSSL_PARAM>, for parameters that OSSL_FUNC_store_set_ctx_params()
+descriptor L<OSSL_PARAM(3)>, for parameters that OSSL_FUNC_store_set_ctx_params()
 can handle.
 
 OSSL_FUNC_store_set_ctx_params() should set additional parameters, such as what
@@ -104,6 +114,27 @@ URI has been reached.  When that happens, there's no point trying to do any
 further loading.
 
 OSSL_FUNC_store_close() frees the provider side context I<ctx>.
+
+When a provider-native object is created by a store manager it would be unsuitable
+for direct use with a foreign provider. The export function allows for
+exporting the object to that foreign provider if the foreign provider
+supports the type of the object and provides an import function.
+
+OSSL_FUNC_store_export_object() should export the object of size I<objref_sz>
+referenced by I<objref> as an L<OSSL_PARAM(3)> array and pass that to the
+I<export_cb> as well as the given I<export_cbarg>.
+
+OSSL_FUNC_store_delete() deletes the object identified by the I<uri>. The
+implementation is entirely responsible for the interpretation of the URI.  In
+case a passphrase needs to be prompted to remove an object, I<pw_cb> should be
+called.
+
+OSSL_FUNC_store_open_ex() is an extended variant of OSSL_FUNC_store_open(). If
+the provider does not implement this function the code internally falls back to
+use the original OSSL_FUNC_store_open().
+This variant additionally accepts an L<OSSL_PARAM(3)> object and a I<pw_cb>
+callback that can be used to request a passphrase in cases where the whole
+store needs to be unlocked before performing any load operation.
 
 =head2 Load Parameters
 
@@ -141,17 +172,27 @@ The contents of the octet string is expected to be in DER form.
 Indicates that the caller wants to search for an object with the given
 serial number associated.
 
-=item "digest" (B<OSSL_STORE_PARAM_DIGEST>) <utf8 string>
+=item "digest" (B<OSSL_STORE_PARAM_DIGEST>) <UTF8 string>
 
 =item "fingerprint" (B<OSSL_STORE_PARAM_FINGERPRINT>) <octet string>
 
 Indicates that the caller wants to search for an object with the given
 fingerprint, computed with the given digest.
 
-=item "alias" (B<OSSL_STORE_PARAM_ALIAS>) <utf8 string>
+=item "alias" (B<OSSL_STORE_PARAM_ALIAS>) <UTF8 string>
 
 Indicates that the caller wants to search for an object with the given
 alias (some call it a "friendly name").
+
+=item "properties" (B<OSSL_STORE_PARAM_PROPERTIES) <utf8 string>
+
+Property string to use when querying for algorithms such as the B<OSSL_DECODER>
+decoder implementations.
+
+=item "input-type" (B<OSSL_STORE_PARAM_INPUT_TYPE) <utf8 string>
+
+Type of the input format as a hint to use when decoding the objects in the
+store.
 
 =back
 
@@ -167,9 +208,11 @@ L<provider(7)>
 
 The STORE interface was introduced in OpenSSL 3.0.
 
+OSSL_FUNC_store_delete() callback was added in OpenSSL 3.2
+
 =head1 COPYRIGHT
 
-Copyright 2020-2021 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2020-2023 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

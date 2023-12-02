@@ -53,13 +53,14 @@ static int req_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
     switch (operation) {
     case ASN1_OP_D2I_PRE:
         ASN1_OCTET_STRING_free(ret->distinguishing_id);
-        /* fall thru */
+        /* fall through */
     case ASN1_OP_NEW_POST:
         ret->distinguishing_id = NULL;
         break;
 
     case ASN1_OP_FREE_POST:
         ASN1_OCTET_STRING_free(ret->distinguishing_id);
+        OPENSSL_free(ret->propq);
         break;
     case ASN1_OP_DUP_POST:
         {
@@ -67,6 +68,37 @@ static int req_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
 
             if (!ossl_x509_req_set0_libctx(ret, old->libctx, old->propq))
                 return 0;
+            if (old->req_info.pubkey != NULL) {
+                EVP_PKEY *pkey = X509_PUBKEY_get0(old->req_info.pubkey);
+
+                if (pkey != NULL) {
+                    pkey = EVP_PKEY_dup(pkey);
+                    if (pkey == NULL) {
+                        ERR_raise(ERR_LIB_X509, ERR_R_EVP_LIB);
+                        return 0;
+                    }
+                    if (!X509_PUBKEY_set(&ret->req_info.pubkey, pkey)) {
+                        EVP_PKEY_free(pkey);
+                        ERR_raise(ERR_LIB_X509, ERR_R_INTERNAL_ERROR);
+                        return 0;
+                    }
+                    EVP_PKEY_free(pkey);
+                }
+            }
+        }
+        break;
+    case ASN1_OP_GET0_LIBCTX:
+        {
+            OSSL_LIB_CTX **libctx = exarg;
+
+            *libctx = ret->libctx;
+        }
+        break;
+    case ASN1_OP_GET0_PROPQ:
+        {
+            const char **propq = exarg;
+
+            *propq = ret->propq;
         }
         break;
     }

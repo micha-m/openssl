@@ -28,7 +28,9 @@
 
 # ifdef USE_BCRYPTGENRANDOM
 #  include <bcrypt.h>
-#  pragma comment(lib, "bcrypt.lib")
+#  ifdef _MSC_VER
+#   pragma comment(lib, "bcrypt.lib")
+#  endif
 #  ifndef STATUS_SUCCESS
 #   define STATUS_SUCCESS ((NTSTATUS)0x00000000L)
 #  endif
@@ -142,26 +144,6 @@ int ossl_pool_add_nonce_data(RAND_POOL *pool)
     data.tid = GetCurrentThreadId();
     GetSystemTimeAsFileTime(&data.time);
 
-    return ossl_rand_pool_add(pool, (unsigned char *)&data, sizeof(data), 0);
-}
-
-int ossl_rand_pool_add_additional_data(RAND_POOL *pool)
-{
-    struct {
-        DWORD tid;
-        LARGE_INTEGER time;
-    } data;
-
-    /* Erase the entire structure including any padding */
-    memset(&data, 0, sizeof(data));
-
-    /*
-     * Add some noise from the thread id and a high resolution timer.
-     * The thread id adds a little randomness if the drbg is accessed
-     * concurrently (which is the case for the <master> drbg).
-     */
-    data.tid = GetCurrentThreadId();
-    QueryPerformanceCounter(&data.time);
     return ossl_rand_pool_add(pool, (unsigned char *)&data, sizeof(data), 0);
 }
 

@@ -34,7 +34,7 @@ provider-decoder - The OSSL_DECODER library E<lt>-E<gt> provider functions
                               OSSL_PASSPHRASE_CALLBACK *cb, void *cbarg);
 
  /* Functions to export a decoded object */
- void *OSSL_FUNC_decoder_export_object(void *ctx,
+ int OSSL_FUNC_decoder_export_object(void *ctx,
                                        const void *objref, size_t objref_sz,
                                        OSSL_CALLBACK *export_cb,
                                        void *export_cbarg);
@@ -50,7 +50,7 @@ object reference or intermediate decoded data from an encoded form
 read from the given B<OSSL_CORE_BIO>. If the caller wants to decode
 data from memory, it should provide a L<BIO_s_mem(3)> B<BIO>. The decoded
 data or object reference is passed along with eventual metadata
-to the I<metadata_cb> as B<OSSL_PARAM> parameters.
+to the I<metadata_cb> as L<OSSL_PARAM(3)> parameters.
 
 The decoder doesn't need to know more about the B<OSSL_CORE_BIO>
 pointer than being able to pass it to the appropriate BIO upcalls (see
@@ -67,14 +67,14 @@ that object into a different provider the OSSL_FUNC_decoder_export_object()
 can be called as the final step of the decoding process.
 
 All "functions" mentioned here are passed as function pointers between
-F<libcrypto> and the provider in B<OSSL_DISPATCH> arrays via
-B<OSSL_ALGORITHM> arrays that are returned by the provider's
+F<libcrypto> and the provider in L<OSSL_DISPATCH(3)> arrays via
+L<OSSL_ALGORITHM(3)> arrays that are returned by the provider's
 provider_query_operation() function
 (see L<provider-base(7)/Provider Functions>).
 
 All these "functions" have a corresponding function type definition
 named B<OSSL_FUNC_{name}_fn>, and a helper function to retrieve the
-function pointer from an B<OSSL_DISPATCH> element named
+function pointer from an L<OSSL_DISPATCH(3)> element named
 B<OSSL_FUNC_{name}>.
 For example, the "function" OSSL_FUNC_decoder_decode() has these:
 
@@ -83,10 +83,10 @@ For example, the "function" OSSL_FUNC_decoder_decode() has these:
                                    int selection,
                                    OSSL_CALLBACK *data_cb, void *data_cbarg,
                                    OSSL_PASSPHRASE_CALLBACK *cb, void *cbarg);
- static ossl_inline OSSL_FUNC_decoder_decode_fn
+ static ossl_inline OSSL_FUNC_decoder_decode_fn*
      OSSL_FUNC_decoder_decode(const OSSL_DISPATCH *opf);
 
-B<OSSL_DISPATCH> arrays are indexed by numbers that are provided as
+L<OSSL_DISPATCH(3)> arrays are indexed by numbers that are provided as
 macros in L<openssl-core_dispatch.h(7)>, as follows:
 
  OSSL_FUNC_decoder_get_params          OSSL_FUNC_DECODER_GET_PARAMS
@@ -117,7 +117,11 @@ Properties can be used to further specify details about an implementation:
 =item input
 
 This property is used to specify what format of input the implementation
-can decode.  OpenSSL providers recognize the following input types:
+can decode.
+
+This property is I<mandatory>.
+
+OpenSSL providers recognize the following input types:
 
 =over 4
 
@@ -142,9 +146,27 @@ An implementation with that input type decodes PVK formatted data.
 =item structure
 
 This property is used to specify the structure that the decoded data is
-expected to have. An example could be C<pkcs8>, to specify explicitly that
-the object to be decoded (presumably an asymmetric key pair, in this case)
-is wrapped in a PKCS#8 structure.
+expected to have.
+
+This property is I<optional>.
+
+Structures currently recognised by built-in decoders:
+
+=over 4
+
+=item "type-specific"
+
+Type specific structure.
+
+=item "pkcs8"
+
+Structure according to the PKCS#8 specification.
+
+=item "SubjectPublicKeyInfo"
+
+Encoding of public keys according to the Subject Public Key Info of RFC 5280.
+
+=back
 
 =back
 
@@ -180,7 +202,7 @@ from I<params> that it recognises.  Unrecognised parameters should be
 ignored.
 Passing NULL for I<params> should return true.
 
-OSSL_FUNC_decoder_settable_ctx_params() returns a constant B<OSSL_PARAM>
+OSSL_FUNC_decoder_settable_ctx_params() returns a constant L<OSSL_PARAM(3)>
 array describing the parameters that OSSL_FUNC_decoder_set_ctx_params()
 can handle.
 
@@ -195,94 +217,46 @@ exporting the object into that foreign provider if the foreign provider
 supports the type of the object and provides an import function.
 
 OSSL_FUNC_decoder_export_object() should export the object of size I<objref_sz>
-referenced by I<objref> as an B<OSSL_PARAM> array and pass that into the
+referenced by I<objref> as an L<OSSL_PARAM(3)> array and pass that into the
 I<export_cb> as well as the given I<export_cbarg>.
 
 =head2 Decoding functions
 
 OSSL_FUNC_decoder_decode() should decode the data as read from
 the B<OSSL_CORE_BIO> I<in> to produce decoded data or an object to be
-passed as reference in an B<OSSL_PARAM> array along with possible other
-metadata that was decoded from the input. This B<OSSL_PARAM> array is
+passed as reference in an L<OSSL_PARAM(3)> array along with possible other
+metadata that was decoded from the input. This L<OSSL_PARAM(3)> array is
 then passed to the I<data_cb> callback.  The I<selection> bits,
 if relevant, should determine what the input data should contain.
-The decoding functions also take an B<OSSL_PASSPHRASE_CALLBACK> function
+The decoding functions also take an L<OSSL_PASSPHRASE_CALLBACK(3)> function
 pointer along with a pointer to application data I<cbarg>, which should be
 used when a pass phrase prompt is needed.
 
-=head2 Decoder parameters
-
-The decoder implementation itself has parameters that can be used to
-determine how it fits in a chain of decoders:
+It's important to understand that the return value from this function is
+interpreted as follows:
 
 =over 4
 
-=item "input-type" (B<OSSL_DECODER_PARAM_INPUT_TYPE>) <UTF8 string>
+=item True (1)
 
-This is used to specify the input type for a decoder implementation.
+This means "carry on the decoding process", and is meaningful even though
+this function couldn't decode the input into anything, because there may be
+another decoder implementation that can decode it into something.
 
-This parameter is I<mandatory>.
+The I<data_cb> callback should never be called when this function can't
+decode the input into anything.
 
-Input types currently recognized by built-in decoders:
+=item False (0)
 
-=over 4
-
-=item "DER"
-
-ASN.1 DER encoded binary data
-
-=item "PEM"
-
-Base64 encoded data with PEM headers
-
-=item "MSBLOB"
-
-Private or public key encoding according to Microsoft specification
-
-=item "PVK"
-
-Encrypted private key encoding according to Microsoft specification
+This means "stop the decoding process", and is meaningful when the input
+could be decoded into some sort of object that this function understands,
+but further treatment of that object results into errors that won't be
+possible for some other decoder implementation to get a different result.
 
 =back
 
-=for comment If we had functionality to get the value of a specific property
-in a set of properties, it would be possible to determine the input type
-from the C<input> property.
-
-=item "input-structure" (B<OSSL_ENCODER_PARAM_INPUT_STRUCTURE>) <UTF8 string>
-
-This is used to specify the outermost input structure for a decoder
+The conditions to stop the decoding process are at the discretion of the
 implementation.
-
-For example, an input of type "DER" for a key pair could be structured
-using PKCS#8, or a key type specific structure, such as PKCS#1 for RSA
-keys.
-
-This parameter is I<optional>.
-
-Input structures currently recognized by built-in decoders:
-
-=over 4
-
-=item "type-specific"
-
-Type specific structure.
-
-=item "PKCS8"
-
-Structure according to the PKCS#8 specification.
-
-=item "SubjectPublicKeyInfo"
-
-Encoding of public keys according to the Subject Public Key Info of RFC 5280.
-
-=back
-
-=for comment If we had functionality to get the value of a specific property
-in a set of properties, it would be possible to determine the input
-structure from the C<structure> property.
-
-=back
 
 =head2 Decoder operation parameters
 
@@ -310,12 +284,13 @@ OSSL_FUNC_decoder_set_ctx_params() returns 1, unless a recognised
 parameter was invalid or caused an error, for which 0 is returned.
 
 OSSL_FUNC_decoder_settable_ctx_params() returns a pointer to an array of
-constant B<OSSL_PARAM> elements.
+constant L<OSSL_PARAM(3)> elements.
 
 OSSL_FUNC_decoder_does_selection() returns 1 if the decoder implementation
 supports any of the I<selection> bits, otherwise 0.
 
-OSSL_FUNC_decoder_decode() returns 1 on success, or 0 on failure.
+OSSL_FUNC_decoder_decode() returns 1 to signal that the decoding process
+should continue, or 0 to signal that it should stop.
 
 =head1 SEE ALSO
 
@@ -327,7 +302,7 @@ The DECODER interface was introduced in OpenSSL 3.0.
 
 =head1 COPYRIGHT
 
-Copyright 2019-2021 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2019-2023 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

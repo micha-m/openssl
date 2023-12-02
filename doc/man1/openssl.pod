@@ -11,22 +11,14 @@ I<command>
 [ I<options> ... ]
 [ I<parameters> ... ]
 
-B<openssl>
-B<list>
-B<-standard-commands> |
-B<-digest-commands> |
-B<-cipher-commands> |
-B<-cipher-algorithms> |
-B<-digest-algorithms> |
-B<-mac-algorithms> |
-B<-public-key-algorithms>
-
 B<openssl> B<no->I<XXX> [ I<options> ]
+
+B<openssl> B<-help> | B<-version>
 
 =head1 DESCRIPTION
 
-OpenSSL is a cryptography toolkit implementing the Secure Sockets Layer (SSL
-v2/v3) and Transport Layer Security (TLS v1) network protocols and related
+OpenSSL is a cryptography toolkit implementing the Secure Sockets Layer (SSL)
+and Transport Layer Security (TLS) network protocols and related
 cryptography standards required by them.
 
 The B<openssl> program is a command line program for using the various
@@ -50,21 +42,8 @@ Each command can have many options and argument parameters, shown above as
 I<options> and I<parameters>.
 
 Detailed documentation and use cases for most standard subcommands are available
-(e.g., L<openssl-x509(1)>).
-
-The list options B<-standard-commands>, B<-digest-commands>,
-and B<-cipher-commands> output a list (one entry per line) of the names
-of all standard commands, message digest commands, or cipher commands,
-respectively, that are available.
-
-The list parameters B<-cipher-algorithms>, B<-digest-algorithms>,
-and B<-mac-algorithms> list all cipher, message digest, and message
-authentication code names, one entry per line. Aliases are listed as:
-
- from => to
-
-The list parameter B<-public-key-algorithms> lists all supported public
-key algorithms.
+(e.g., L<openssl-x509(1)>). The subcommand L<openssl-list(1)> may be used to list
+subcommands.
 
 The command B<no->I<XXX> tests whether a command of the
 specified name is available.  If no command named I<XXX> exists, it
@@ -387,6 +366,22 @@ SHA-3 384 Digest
 
 SHA-3 512 Digest
 
+=item B<keccak-224>
+
+KECCAK 224 Digest
+
+=item B<keccak-256>
+
+KECCAK 256 Digest
+
+=item B<keccak-384>
+
+KECCAK 384 Digest
+
+=item B<keccak-512>
+
+KECCAK 512 Digest
+
 =item B<shake128>
 
 SHA-3 SHAKE128 Digest
@@ -506,13 +501,33 @@ SM4 Cipher
 Details of which options are available depend on the specific command.
 This section describes some common options with common behavior.
 
-=head2 Common Options
+=head2 Program Options
+
+These options can be specified without a command specified to get help
+or version information.
 
 =over 4
 
 =item B<-help>
 
 Provides a terse summary of all options.
+For more detailed information, each command supports a B<-help> option.
+Accepts B<--help> as well.
+
+=item B<-version>
+
+Provides a terse summary of the B<openssl> program version.
+For more detailed information see L<openssl-version(1)>.
+Accepts B<--version> as well.
+
+=back
+
+=head2 Common Options
+
+=over 4
+
+=item B<-help>
+
 If an option takes an argument, the "type" of argument is also given.
 
 =item B<-->
@@ -591,10 +606,12 @@ When a specific TLS version is required, only that version will be offered or
 accepted.
 Only one specific protocol can be given and it cannot be combined with any of
 the B<no_> options.
+The B<no_*> options do not work with B<s_time> and B<ciphers> commands but work with
+B<s_client> and B<s_server> commands.
 
 =item B<-dtls>, B<-dtls1>, B<-dtls1_2>
 
-These options specify to use DTLS instead of DLTS.
+These options specify to use DTLS instead of TLS.
 With B<-dtls>, clients will negotiate any supported DTLS protocol version.
 Use the B<-dtls1> or B<-dtls1_2> options to support only DTLS1.0 or DTLS1.2,
 respectively.
@@ -651,11 +668,18 @@ the PKCS#11 URI as defined in RFC 7512 should be possible to use directly:
 
 =item B<-provider> I<name>
 
-Load and initialize the provider identified by I<name>.
+Load and initialize the provider identified by I<name>. The I<name>
+can be also a path to the provider module. In that case the provider name
+will be the specified path and not just the provider module name.
+Interpretation of relative paths is platform specific. The configured
+"MODULESDIR" path, B<OPENSSL_MODULES> environment variable, or the path
+specified by B<-provider-path> is prepended to relative paths.
+See L<provider(7)> for a more detailed description.
 
 =item B<-provider-path> I<path>
 
 Specifies the search path that is to be used for looking for providers.
+Equivalently, the B<OPENSSL_MODULES> environment variable may be set.
 
 =item B<-propquery> I<propq>
 
@@ -687,8 +711,8 @@ see L<openssl-env(7)>.
 
 Enable tracing output of OpenSSL library, by name.
 This output will only make sense if you know OpenSSL internals well.
-Also, it might not give you any output at all, depending on how
-OpenSSL was built.
+Also, it might not give you any output at all
+if OpenSSL was built without tracing support.
 
 The value is a comma separated list of names, with the following
 available:
@@ -697,15 +721,19 @@ available:
 
 =item B<TRACE>
 
-The tracing functionality.
+Traces the OpenSSL trace API itself.
+
+=item B<INIT>
+
+Traces OpenSSL library initialization and cleanup.
 
 =item B<TLS>
 
-General SSL/TLS.
+Traces the TLS/SSL protocol.
 
 =item B<TLS_CIPHER>
 
-SSL/TLS cipher.
+Traces the ciphers used by the TLS/SSL protocol.
 
 =item B<CONF>
 
@@ -724,24 +752,48 @@ of generated for each change.
 
 =item B<PKCS5V2>
 
-PKCS#5 v2 keygen.
+Traces PKCS#5 v2 key generation.
 
 =item B<PKCS12_KEYGEN>
 
-PKCS#12 key generation.
+Traces PKCS#12 key generation.
 
 =item B<PKCS12_DECRYPT>
 
-PKCS#12 decryption.
+Traces PKCS#12 decryption.
 
 =item B<X509V3_POLICY>
 
-Generates the complete policy tree at various point during X.509 v3
+Generates the complete policy tree at various points during X.509 v3
 policy evaluation.
 
 =item B<BN_CTX>
 
-BIGNUM context.
+Traces BIGNUM context operations.
+
+=item B<CMP>
+
+Traces CMP client and server activity.
+
+=item B<STORE>
+
+Traces STORE operations.
+
+=item B<DECODER>
+
+Traces decoder operations.
+
+=item B<ENCODER>
+
+Traces encoder operations.
+
+=item B<REF_COUNT>
+
+Traces decrementing certain ASN.1 structure references.
+
+=item B<HTTP>
+
+Traces the HTTP client and server, such as messages being sent and received.
 
 =back
 
@@ -768,6 +820,7 @@ L<openssl-gendsa(1)>,
 L<openssl-genpkey(1)>,
 L<openssl-genrsa(1)>,
 L<openssl-kdf(1)>,
+L<openssl-list(1)>,
 L<openssl-mac(1)>,
 L<openssl-nseq(1)>,
 L<openssl-ocsp(1)>,
@@ -822,7 +875,7 @@ that program with no arguments is now equivalent to C<openssl help>.
 
 =head1 COPYRIGHT
 
-Copyright 2000-2021 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2000-2023 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

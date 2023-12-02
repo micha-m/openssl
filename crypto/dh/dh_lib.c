@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -15,7 +15,9 @@
 
 #include <stdio.h>
 #include <openssl/bn.h>
-#include <openssl/engine.h>
+#ifndef FIPS_MODULE
+# include <openssl/engine.h>
+#endif
 #include <openssl/obj_mac.h>
 #include <openssl/core_names.h>
 #include "internal/cryptlib.h"
@@ -73,15 +75,18 @@ static DH *dh_new_intern(ENGINE *engine, OSSL_LIB_CTX *libctx)
 {
     DH *ret = OPENSSL_zalloc(sizeof(*ret));
 
-    if (ret == NULL) {
-        ERR_raise(ERR_LIB_DH, ERR_R_MALLOC_FAILURE);
+    if (ret == NULL)
+        return NULL;
+
+    ret->lock = CRYPTO_THREAD_lock_new();
+    if (ret->lock == NULL) {
+        ERR_raise(ERR_LIB_DH, ERR_R_CRYPTO_LIB);
+        OPENSSL_free(ret);
         return NULL;
     }
 
-    ret->references = 1;
-    ret->lock = CRYPTO_THREAD_lock_new();
-    if (ret->lock == NULL) {
-        ERR_raise(ERR_LIB_DH, ERR_R_MALLOC_FAILURE);
+    if (!CRYPTO_NEW_REF(&ret->references, 1)) {
+        CRYPTO_THREAD_lock_free(ret->lock);
         OPENSSL_free(ret);
         return NULL;
     }
@@ -114,6 +119,8 @@ static DH *dh_new_intern(ENGINE *engine, OSSL_LIB_CTX *libctx)
         goto err;
 #endif /* FIPS_MODULE */
 
+    ossl_ffc_params_init(&ret->params);
+
     if ((ret->meth->init != NULL) && !ret->meth->init(ret)) {
         ERR_raise(ERR_LIB_DH, ERR_R_INIT_FAIL);
         goto err;
@@ -133,7 +140,7 @@ void DH_free(DH *r)
     if (r == NULL)
         return;
 
-    CRYPTO_DOWN_REF(&r->references, &i, r->lock);
+    CRYPTO_DOWN_REF(&r->references, &i);
     REF_PRINT_COUNT("DH", r);
     if (i > 0)
         return;
@@ -149,6 +156,7 @@ void DH_free(DH *r)
 #endif
 
     CRYPTO_THREAD_lock_free(r->lock);
+    CRYPTO_FREE_REF(&r->references);
 
     ossl_ffc_params_cleanup(&r->params);
     BN_clear_free(r->pub_key);
@@ -160,7 +168,7 @@ int DH_up_ref(DH *r)
 {
     int i;
 
-    if (CRYPTO_UP_REF(&r->references, &i, r->lock) <= 0)
+    if (CRYPTO_UP_REF(&r->references, &i) <= 0)
         return 0;
 
     REF_PRINT_COUNT("DH", r);
@@ -202,6 +210,7 @@ int DH_size(const DH *dh)
 int DH_security_bits(const DH *dh)
 {
     int N;
+
     if (dh->params.q != NULL)
         N = BN_num_bits(dh->params.q);
     else if (dh->length)

@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -15,7 +15,9 @@
 
 #include <openssl/crypto.h>
 #include <openssl/core_names.h>
-#include <openssl/engine.h>
+#ifndef FIPS_MODULE
+# include <openssl/engine.h>
+#endif
 #include <openssl/evp.h>
 #include <openssl/param_build.h>
 #include "internal/cryptlib.h"
@@ -74,15 +76,18 @@ static RSA *rsa_new_intern(ENGINE *engine, OSSL_LIB_CTX *libctx)
 {
     RSA *ret = OPENSSL_zalloc(sizeof(*ret));
 
-    if (ret == NULL) {
-        ERR_raise(ERR_LIB_RSA, ERR_R_MALLOC_FAILURE);
+    if (ret == NULL)
+        return NULL;
+
+    ret->lock = CRYPTO_THREAD_lock_new();
+    if (ret->lock == NULL) {
+        ERR_raise(ERR_LIB_RSA, ERR_R_CRYPTO_LIB);
+        OPENSSL_free(ret);
         return NULL;
     }
 
-    ret->references = 1;
-    ret->lock = CRYPTO_THREAD_lock_new();
-    if (ret->lock == NULL) {
-        ERR_raise(ERR_LIB_RSA, ERR_R_MALLOC_FAILURE);
+    if (!CRYPTO_NEW_REF(&ret->references, 1)) {
+        CRYPTO_THREAD_lock_free(ret->lock);
         OPENSSL_free(ret);
         return NULL;
     }
@@ -135,7 +140,7 @@ void RSA_free(RSA *r)
     if (r == NULL)
         return;
 
-    CRYPTO_DOWN_REF(&r->references, &i, r->lock);
+    CRYPTO_DOWN_REF(&r->references, &i);
     REF_PRINT_COUNT("RSA", r);
     if (i > 0)
         return;
@@ -152,6 +157,7 @@ void RSA_free(RSA *r)
 #endif
 
     CRYPTO_THREAD_lock_free(r->lock);
+    CRYPTO_FREE_REF(&r->references);
 
     BN_free(r->n);
     BN_free(r->e);
@@ -179,7 +185,7 @@ int RSA_up_ref(RSA *r)
 {
     int i;
 
-    if (CRYPTO_UP_REF(&r->references, &i, r->lock) <= 0)
+    if (CRYPTO_UP_REF(&r->references, &i) <= 0)
         return 0;
 
     REF_PRINT_COUNT("RSA", r);
@@ -312,21 +318,30 @@ uint16_t ossl_ifc_ffc_compute_security_bits(int n)
 {
     uint64_t x;
     uint32_t lx;
-    uint16_t y;
+    uint16_t y, cap;
 
-    /* Look for common values as listed in SP 800-56B rev 2 Appendix D */
+    /*
+     * Look for common values as listed in standards.
+     * These values are not exactly equal to the results from the formulae in
+     * the standards but are defined to be canonical.
+     */
     switch (n) {
-    case 2048:
+    case 2048:      /* SP 800-56B rev 2 Appendix D and FIPS 140-2 IG 7.5 */
         return 112;
-    case 3072:
+    case 3072:      /* SP 800-56B rev 2 Appendix D and FIPS 140-2 IG 7.5 */
         return 128;
-    case 4096:
+    case 4096:      /* SP 800-56B rev 2 Appendix D */
         return 152;
-    case 6144:
+    case 6144:      /* SP 800-56B rev 2 Appendix D */
         return 176;
-    case 8192:
+    case 7680:      /* FIPS 140-2 IG 7.5 */
+        return 192;
+    case 8192:      /* SP 800-56B rev 2 Appendix D */
         return 200;
+    case 15360:     /* FIPS 140-2 IG 7.5 */
+        return 256;
     }
+
     /*
      * The first incorrect result (i.e. not accurate or off by one low) occurs
      * for n = 699668.  The true value here is 1200.  Instead of using this n
@@ -338,11 +353,26 @@ uint16_t ossl_ifc_ffc_compute_security_bits(int n)
     if (n < 8)
         return 0;
 
+    /*
+     * To ensure that the output is non-decreasing with respect to n,
+     * a cap needs to be applied to the two values where the function over
+     * estimates the strength (according to the above fast path).
+     */
+    if (n <= 7680)
+        cap = 192;
+    else if (n <= 15360)
+        cap = 256;
+    else
+        cap = 1200;
+
     x = n * (uint64_t)log_2;
     lx = ilog_e(x);
     y = (uint16_t)((mul2(c1_923, icbrt64(mul2(mul2(x, lx), lx))) - c4_690)
                    / log_2);
-    return (y + 4) & ~7;
+    y = (y + 4) & ~7;
+    if (y > cap)
+        y = cap;
+    return y;
 }
 
 
@@ -727,17 +757,21 @@ int ossl_rsa_set0_all_params(RSA *r, const STACK_OF(BIGNUM) *primes,
         return 0;
 
     pnum = sk_BIGNUM_num(primes);
-    if (pnum < 2
-        || pnum != sk_BIGNUM_num(exps)
-        || pnum != sk_BIGNUM_num(coeffs) + 1)
+    if (pnum < 2)
         return 0;
 
     if (!RSA_set0_factors(r, sk_BIGNUM_value(primes, 0),
-                          sk_BIGNUM_value(primes, 1))
-        || !RSA_set0_crt_params(r, sk_BIGNUM_value(exps, 0),
-                                sk_BIGNUM_value(exps, 1),
-                                sk_BIGNUM_value(coeffs, 0)))
+                          sk_BIGNUM_value(primes, 1)))
         return 0;
+
+    if (pnum == sk_BIGNUM_num(exps)
+        && pnum == sk_BIGNUM_num(coeffs) + 1) {
+
+        if (!RSA_set0_crt_params(r, sk_BIGNUM_value(exps, 0),
+                                 sk_BIGNUM_value(exps, 1),
+                                 sk_BIGNUM_value(coeffs, 0)))
+        return 0;
+    }
 
 #ifndef FIPS_MODULE
     old_infos = r->prime_infos;
@@ -761,10 +795,8 @@ int ossl_rsa_set0_all_params(RSA *r, const STACK_OF(BIGNUM) *primes,
                 goto err;
 
             /* Using ossl_rsa_multip_info_new() is wasteful, so allocate directly */
-            if ((pinfo = OPENSSL_zalloc(sizeof(*pinfo))) == NULL) {
-                ERR_raise(ERR_LIB_RSA, ERR_R_MALLOC_FAILURE);
+            if ((pinfo = OPENSSL_zalloc(sizeof(*pinfo))) == NULL)
                 goto err;
-            }
 
             pinfo->r = prime;
             pinfo->d = exp;
@@ -927,7 +959,6 @@ static int int_get_rsa_md_name(EVP_PKEY_CTX *ctx,
 /*
  * This one is currently implemented as an EVP_PKEY_CTX_ctrl() wrapper,
  * simply because that's easier.
- * TODO(3.0) Should this be deprecated?
  */
 int EVP_PKEY_CTX_set_rsa_padding(EVP_PKEY_CTX *ctx, int pad_mode)
 {
@@ -938,7 +969,6 @@ int EVP_PKEY_CTX_set_rsa_padding(EVP_PKEY_CTX *ctx, int pad_mode)
 /*
  * This one is currently implemented as an EVP_PKEY_CTX_ctrl() wrapper,
  * simply because that's easier.
- * TODO(3.0) Should this be deprecated?
  */
 int EVP_PKEY_CTX_get_rsa_padding(EVP_PKEY_CTX *ctx, int *pad_mode)
 {
@@ -949,7 +979,6 @@ int EVP_PKEY_CTX_get_rsa_padding(EVP_PKEY_CTX *ctx, int *pad_mode)
 /*
  * This one is currently implemented as an EVP_PKEY_CTX_ctrl() wrapper,
  * simply because that's easier.
- * TODO(3.0) Should this be deprecated in favor of passing a name?
  */
 int EVP_PKEY_CTX_set_rsa_pss_keygen_md(EVP_PKEY_CTX *ctx, const EVP_MD *md)
 {
@@ -969,7 +998,6 @@ int EVP_PKEY_CTX_set_rsa_pss_keygen_md_name(EVP_PKEY_CTX *ctx,
 /*
  * This one is currently implemented as an EVP_PKEY_CTX_ctrl() wrapper,
  * simply because that's easier.
- * TODO(3.0) Should this be deprecated in favor of passing a name?
  */
 int EVP_PKEY_CTX_set_rsa_oaep_md(EVP_PKEY_CTX *ctx, const EVP_MD *md)
 {
@@ -997,7 +1025,6 @@ int EVP_PKEY_CTX_get_rsa_oaep_md_name(EVP_PKEY_CTX *ctx, char *name,
 /*
  * This one is currently implemented as an EVP_PKEY_CTX_ctrl() wrapper,
  * simply because that's easier.
- * TODO(3.0) Should this be deprecated in favor of getting a name?
  */
 int EVP_PKEY_CTX_get_rsa_oaep_md(EVP_PKEY_CTX *ctx, const EVP_MD **md)
 {
@@ -1008,7 +1035,6 @@ int EVP_PKEY_CTX_get_rsa_oaep_md(EVP_PKEY_CTX *ctx, const EVP_MD **md)
 /*
  * This one is currently implemented as an EVP_PKEY_CTX_ctrl() wrapper,
  * simply because that's easier.
- * TODO(3.0) Should this be deprecated in favor of passing a name?
  */
 int EVP_PKEY_CTX_set_rsa_mgf1_md(EVP_PKEY_CTX *ctx, const EVP_MD *md)
 {
@@ -1036,7 +1062,6 @@ int EVP_PKEY_CTX_get_rsa_mgf1_md_name(EVP_PKEY_CTX *ctx, char *name,
 /*
  * This one is currently implemented as an EVP_PKEY_CTX_ctrl() wrapper,
  * simply because that's easier.
- * TODO(3.0) Should this be deprecated in favor of passing a name?
  */
 int EVP_PKEY_CTX_set_rsa_pss_keygen_mgf1_md(EVP_PKEY_CTX *ctx, const EVP_MD *md)
 {
@@ -1055,7 +1080,6 @@ int EVP_PKEY_CTX_set_rsa_pss_keygen_mgf1_md_name(EVP_PKEY_CTX *ctx,
 /*
  * This one is currently implemented as an EVP_PKEY_CTX_ctrl() wrapper,
  * simply because that's easier.
- * TODO(3.0) Should this be deprecated in favor of getting a name?
  */
 int EVP_PKEY_CTX_get_rsa_mgf1_md(EVP_PKEY_CTX *ctx, const EVP_MD **md)
 {
@@ -1066,6 +1090,13 @@ int EVP_PKEY_CTX_get_rsa_mgf1_md(EVP_PKEY_CTX *ctx, const EVP_MD **md)
 int EVP_PKEY_CTX_set0_rsa_oaep_label(EVP_PKEY_CTX *ctx, void *label, int llen)
 {
     OSSL_PARAM rsa_params[2], *p = rsa_params;
+    const char *empty = "";
+    /*
+     * Needed as we swap label with empty if it is NULL, and label is
+     * freed at the end of this function.
+     */
+    void *plabel = label;
+    int ret;
 
     if (ctx == NULL || !EVP_PKEY_CTX_IS_ASYM_CIPHER_OP(ctx)) {
         ERR_raise(ERR_LIB_EVP, EVP_R_COMMAND_NOT_SUPPORTED);
@@ -1077,15 +1108,20 @@ int EVP_PKEY_CTX_set0_rsa_oaep_label(EVP_PKEY_CTX *ctx, void *label, int llen)
     if (!EVP_PKEY_CTX_is_a(ctx, "RSA"))
         return -1;
 
+    /* Accept NULL for backward compatibility */
+    if (label == NULL && llen == 0)
+        plabel = (void *)empty;
+
     /* Cast away the const. This is read only so should be safe */
     *p++ = OSSL_PARAM_construct_octet_string(OSSL_ASYM_CIPHER_PARAM_OAEP_LABEL,
-                                             (void *)label, (size_t)llen);
+                                             (void *)plabel, (size_t)llen);
     *p++ = OSSL_PARAM_construct_end();
 
-    if (!evp_pkey_ctx_set_params_strict(ctx, rsa_params))
-        return 0;
+    ret = evp_pkey_ctx_set_params_strict(ctx, rsa_params);
+    if (ret <= 0)
+        return ret;
 
-    /* Ownership is supposed to be transfered to the callee. */
+    /* Ownership is supposed to be transferred to the callee. */
     OPENSSL_free(label);
     return 1;
 }
@@ -1226,8 +1262,11 @@ int EVP_PKEY_CTX_set1_rsa_keygen_pubexp(EVP_PKEY_CTX *ctx, BIGNUM *pubexp)
      * When we're dealing with a provider, there's no need to duplicate
      * pubexp, as it gets copied when transforming to an OSSL_PARAM anyway.
      */
-    if (evp_pkey_ctx_is_legacy(ctx))
+    if (evp_pkey_ctx_is_legacy(ctx)) {
         pubexp = BN_dup(pubexp);
+        if (pubexp == NULL)
+            return 0;
+    }
     ret = EVP_PKEY_CTX_ctrl(ctx, EVP_PKEY_RSA, EVP_PKEY_OP_KEYGEN,
                             EVP_PKEY_CTRL_RSA_KEYGEN_PUBEXP, 0, pubexp);
     if (evp_pkey_ctx_is_legacy(ctx) && ret <= 0)

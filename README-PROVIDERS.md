@@ -9,20 +9,18 @@ Providers
     - [The Null Provider](#the-null-provider)
  - [Loading Providers](#loading-providers)
 
-
 Standard Providers
 ==================
 
 Providers are containers for algorithm implementations. Whenever a cryptographic
 algorithm is used via the high level APIs a provider is selected. It is that
 provider implementation that actually does the required work. There are five
-providers distributed with OpenSSL. In the future we expect third parties to
+providers distributed with OpenSSL. In the future, we expect third parties to
 distribute their own providers which can be added to OpenSSL dynamically.
 Documentation about writing providers is available on the [provider(7)]
 manual page.
 
  [provider(7)]: https://www.openssl.org/docs/manmaster/man7/provider.html
-
 
 The Default Provider
 --------------------
@@ -33,10 +31,10 @@ explicitly (e.g. in the application or via config), then this is the provider
 that will be used. It is loaded automatically the first time that we try to
 get an algorithm from a provider if no other provider has been loaded yet.
 If another provider has already been loaded then it won't be loaded
-automatically. Therefore if you want to use it in conjunction with other
-providers then you must load it explicitly.
+automatically. Therefore, if you want to use it in conjunction with other
+providers, then you must load it explicitly.
 
-This is a "built-in" provider which means that it is compiled and linked
+This is a "built-in" provider, which means that it is compiled and linked
 into the libcrypto library and does not exist as a separate standalone module.
 
 The Legacy Provider
@@ -60,7 +58,7 @@ The FIPS provider contains a sub-set of the algorithm implementations available
 from the default provider, consisting of algorithms conforming to FIPS standards.
 It is intended that this provider will be FIPS140-2 validated.
 
-In some cases there may be minor behavioural differences between algorithm
+In some cases, there may be minor behavioural differences between algorithm
 implementations in this provider compared to the equivalent algorithm in the
 default provider. This is typically in order to conform to FIPS standards.
 
@@ -83,10 +81,8 @@ automatically loaded, the null provider can be loaded instead.
 This can be useful if you are using non-default library contexts and want
 to ensure that the default library context is never used unintentionally.
 
-
 Loading Providers
 =================
-
 
 Providers to be loaded can be specified in the OpenSSL config file.
 See the [config(5)] manual page for information about how to configure
@@ -112,13 +108,11 @@ the legacy and the default provider in the default library context.
     [legacy_sect]
     activate = 1
 
-
 It is also possible to load providers programmatically. For example you can
 load the legacy provider into the default library context as shown below.
 Note that once you have explicitly loaded a provider into the library context
 the default provider will no longer be automatically loaded. Therefore you will
 often also want to explicitly load the default provider, as is done here:
-
 
     #include <stdio.h>
     #include <stdlib.h>

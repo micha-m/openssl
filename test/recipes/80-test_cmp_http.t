@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2007-2021 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2007-2023 The OpenSSL Project Authors. All Rights Reserved.
 # Copyright Nokia 2007-2019
 # Copyright Siemens AG 2015-2019
 #
@@ -12,7 +12,7 @@ use strict;
 use warnings;
 
 use POSIX;
-use OpenSSL::Test qw/:DEFAULT with data_file data_dir srctop_dir bldtop_dir result_dir/;
+use OpenSSL::Test qw/:DEFAULT cmdstr data_file data_dir srctop_dir bldtop_dir result_dir/;
 use OpenSSL::Test::Utils;
 
 BEGIN {
@@ -22,21 +22,21 @@ use lib srctop_dir('Configurations');
 use lib bldtop_dir('.');
 
 plan skip_all => "These tests are not supported in a fuzz build"
-    if config('options') =~ /-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION/;
+    if config('options') =~ /-DFUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION|enable-fuzz-afl/;
 
 plan skip_all => "These tests are not supported in a no-cmp build"
     if disabled("cmp");
-plan skip_all => "These tests are not supported in a no-ec build"
-    if disabled("ec");
+plan skip_all => "These tests are not supported in a no-ecx build"
+    if disabled("ecx"); # EC and EDDSA test certs, e.g., in Mock/newWithNew.pem
+plan skip_all => "These tests are not supported in a no-sock build"
+    if disabled("sock");
+plan skip_all => "These tests are not supported in a no-http build"
+    if disabled("http");
 
-plan skip_all => "Tests involving local HTTP server not available on Windows, AIX or VMS"
-    if $^O =~ /^(VMS|MSWin32|AIX)$/;
+plan skip_all => "Tests involving local HTTP server not available on Windows or VMS"
+    if $^O =~ /^(VMS|MSWin32|msys)$/;
 plan skip_all => "Tests involving local HTTP server not available in cross-compile builds"
     if defined $ENV{EXE_SHELL};
-plan skip_all => "Tests involving local HTTP server require 'kill' command"
-    if system("which kill >/dev/null");
-plan skip_all => "Tests involving local HTTP server require 'lsof' command"
-    if system("which lsof >/dev/null"); # this typically excludes Solaris
 
 sub chop_dblquot { # chop any leading and trailing '"' (needed for Windows)
     my $str = shift;
@@ -44,17 +44,17 @@ sub chop_dblquot { # chop any leading and trailing '"' (needed for Windows)
     return $str;
 }
 
-my $proxy = "<EMPTY>";
-$proxy = chop_dblquot($ENV{http_proxy} // $ENV{HTTP_PROXY} // $proxy);
+my $proxy = chop_dblquot($ENV{http_proxy} // $ENV{HTTP_PROXY} // "");
+$proxy = "<EMPTY>" if $proxy eq "";
 $proxy =~ s{^https?://}{}i;
 my $no_proxy = $ENV{no_proxy} // $ENV{NO_PROXY};
 
-my $app = "apps/openssl cmp";
+my @app = qw(openssl cmp);
 
-# the CMP server configuration consists of:
+# the server-dependent client configuration consists of:
 my $ca_dn;      # The CA's Distinguished Name
 my $server_dn;  # The server's Distinguished Name
-my $server_host;# The server's host name or IP address
+my $server_host;# The server's hostname or IP address
 my $server_port;# The server's port
 my $server_tls; # The server's TLS port, if any, or 0
 my $server_path;# The server's CMP alias
@@ -66,8 +66,19 @@ my $pbm_secret; # The secret for PBM
 my $column;     # The column number of the expected result
 my $sleep = 0;  # The time to sleep between two requests
 
-# The local $server_name variables below are among others taken as the name of a
-# sub-directory with server-specific certs etc. and CA-specific config section.
+# the dynamic server info:
+my $server_fh;  # Server file handle
+
+sub subst_env {
+    my $val = shift;
+    return '""""' if $val eq "";
+    return $ENV{$1} if $val =~ /^\$\{ENV::(\w+)}$/;
+    return $val;
+}
+
+# The local $server_name variables in the subroutines below are used
+# both as the name of a sub-directory with server-specific credentials
+# and as the name of a server-dependent client config section.
 
 sub load_config {
     my $server_name = shift;
@@ -81,23 +92,24 @@ sub load_config {
         } elsif (m/\[\s*.*?\s*\]/) {
             $active = 0;
         } elsif ($active) {
-            $ca_dn       = $1 eq "" ? '""""' : $1 if m/^\s*ca_dn\s*=\s*(.*)?\s*$/;
-            $server_dn   = $1 eq "" ? '""""' : $1 if m/^\s*server_dn\s*=\s*(.*)?\s*$/;
-            $server_host = $1 eq "" ? '""""' : $1 if m/^\s*server_host\s*=\s*(\S*)?\s*(\#.*)?$/;
-            $server_port = $1 eq "" ? '""""' : $1 if m/^\s*server_port\s*=\s*(.*)?\s*$/;
-            $server_tls  = $1 eq "" ? '""""' : $1 if m/^\s*server_tls\s*=\s*(.*)?\s*$/;
-            $server_path = $1 eq "" ? '""""' : $1 if m/^\s*server_path\s*=\s*(.*)?\s*$/;
-            $server_cert = $1 eq "" ? '""""' : $1 if m/^\s*server_cert\s*=\s*(.*)?\s*$/;
-            $kur_port    = $1 eq "" ? '""""' : $1 if m/^\s*kur_port\s*=\s*(.*)?\s*$/;
-            $pbm_port    = $1 eq "" ? '""""' : $1 if m/^\s*pbm_port\s*=\s*(.*)?\s*$/;
-            $pbm_ref     = $1 eq "" ? '""""' : $1 if m/^\s*pbm_ref\s*=\s*(.*)?\s*$/;
-            $pbm_secret  = $1 eq "" ? '""""' : $1 if m/^\s*pbm_secret\s*=\s*(.*)?\s*$/;
-            $column      = $1 eq "" ? '""""' : $1 if m/^\s*column\s*=\s*(.*)?\s*$/;
-            $sleep       = $1 eq "" ? '""""' : $1 if m/^\s*sleep\s*=\s*(.*)?\s*$/;
+            # if there are multiple entries with same key, the last one prevails
+            $ca_dn       = subst_env($1) if m/^\s*ca_dn\s*=\s*(.*)?\s*$/;
+            $server_dn   = subst_env($1) if m/^\s*server_dn\s*=\s*(.*)?\s*$/;
+            $server_host = subst_env($1) if m/^\s*server_host\s*=\s*(\S*)?\s*(\#.*)?$/;
+            $server_port = subst_env($1) if m/^\s*server_port\s*=\s*(\S*)?\s*(\#.*)?$/;
+            $server_tls  = subst_env($1) if m/^\s*server_tls\s*=\s*(.*)?\s*$/;
+            $server_path = subst_env($1) if m/^\s*server_path\s*=\s*(.*)?\s*$/;
+            $server_cert = subst_env($1) if m/^\s*server_cert\s*=\s*(.*)?\s*$/;
+            $kur_port    = subst_env($1) if m/^\s*kur_port\s*=\s*(.*)?\s*$/;
+            $pbm_port    = subst_env($1) if m/^\s*pbm_port\s*=\s*(.*)?\s*$/;
+            $pbm_ref     = subst_env($1) if m/^\s*pbm_ref\s*=\s*(.*)?\s*$/;
+            $pbm_secret  = subst_env($1) if m/^\s*pbm_secret\s*=\s*(.*)?\s*$/;
+            $column      = subst_env($1) if m/^\s*column\s*=\s*(.*)?\s*$/;
+            $sleep       = subst_env($1) if m/^\s*sleep\s*=\s*(.*)?\s*$/;
         }
     }
     close CH;
-    die "Cannot find all CMP server config values in $test_config section [$section]\n"
+    die "Cannot find all server-dependent config values in $test_config section [$section]\n"
         if !defined $ca_dn
         || !defined $server_dn || !defined $server_host
         || !defined $server_port || !defined $server_tls
@@ -105,6 +117,8 @@ sub load_config {
         || !defined $kur_port || !defined $pbm_port
         || !defined $pbm_ref || !defined $pbm_secret
         || !defined $column || !defined $sleep;
+    die "Invalid server_port number in $test_config section [$section]: $server_port"
+        unless $server_port =~ m/^\d+$/;
     $server_dn = $server_dn // $ca_dn;
 }
 
@@ -119,7 +133,7 @@ my @all_aspects = ("connection", "verification", "credentials", "commands", "enr
 my $faillog;
 my $file = $ENV{HARNESS_FAILLOG}; # pathname relative to result_dir
 if ($file) {
-    open($faillog, ">", $file) or die "Cannot open $file for writing: $!";
+    open($faillog, ">", $file) or die "Cannot open '$file' for writing: $!";
 }
 
 sub test_cmp_http {
@@ -129,21 +143,23 @@ sub test_cmp_http {
     my $i = shift;
     my $title = shift;
     my $params = shift;
-    my $expected_exit = shift;
-    my $path_app = bldtop_dir($app);
-    with({ exit_checker => sub {
-        my $actual_exit = shift;
-        my $OK = $actual_exit == $expected_exit;
-        if ($faillog && !$OK) {
+    my $expected_result = shift;
+    $params = [ '-server', "127.0.0.1:$server_port", @$params ]
+        if ($server_name eq "Mock" && !(grep { $_ eq '-server' } @$params));
+    my $cmd = app([@app, @$params]);
+
+    unless (is(my $actual_result = run($cmd), $expected_result, $title)) {
+        if ($faillog) {
             my $quote_spc_empty = sub { $_ eq "" ? '""' : $_ =~ m/ / ? '"'.$_.'"' : $_ };
-            my $invocation = "$path_app ".join(' ', map $quote_spc_empty->($_), @$params);
+            my $invocation = cmdstr($cmd, display => 1);
             print $faillog "$server_name $aspect \"$title\" ($i/$n)".
-                " expected=$expected_exit actual=$actual_exit\n";
+                " expected=$expected_result (".
+                ($expected_result ? "success" : "failure").")".
+                " actual=$actual_result\n";
             print $faillog "$invocation\n\n";
         }
-        return $OK; } },
-         sub { ok(run(cmd([$path_app, @$params,])),
-                  $title); });
+        sleep($sleep) if $expected_result == 1;
+    }
 }
 
 sub test_cmp_http_aspect {
@@ -156,14 +172,13 @@ sub test_cmp_http_aspect {
         my $i = 1;
         foreach (@$tests) {
             test_cmp_http($server_name, $aspect, $n, $i++, $$_[0], $$_[1], $$_[2]);
-            sleep($sleep);
         }
     };
-    # not unlinking test.certout*.pem, test.cacerts.pem, and test.extracerts.pem
+    # not unlinking test.cert.pem, test.cacerts.pem, and test.extracerts.pem
 }
 
 # The input files for the tests done here dynamically depend on the test server
-# selected (where the Mock server used by default is just one possibility).
+# selected (where the mock server used by default is just one possibility).
 # On the other hand the main test configuration file test.cnf, which references
 # several server-dependent input files by relative file names, is static.
 # Moreover the tests use much greater variety of input files than output files.
@@ -172,8 +187,8 @@ sub test_cmp_http_aspect {
 # from $BLDTOP/test-runs/test_cmp_http and prepending the input files by SRCTOP.
 
 indir data_dir() => sub {
-    plan tests => @server_configurations * @all_aspects
-        + (grep(/^Mock$/, @server_configurations)
+    plan tests => 1 + @server_configurations * @all_aspects
+        - (grep(/^Mock$/, @server_configurations)
            && grep(/^certstatus$/, @all_aspects));
 
     foreach my $server_name (@server_configurations) {
@@ -184,21 +199,24 @@ indir data_dir() => sub {
             my $pid;
             if ($server_name eq "Mock") {
                 indir "Mock" => sub {
-                    $pid = start_mock_server("");
-                    skip "Cannot start or find the started CMP mock server",
-                        scalar @all_aspects unless $pid;
+                    $pid = start_server($server_name, "");
+                    next unless $pid;
                 }
             }
             foreach my $aspect (@all_aspects) {
                 $aspect = chop_dblquot($aspect);
-                next if $server_name eq "Mock" && $aspect eq "certstatus";
+                if ($server_name eq "Mock" && $aspect eq "certstatus") {
+                    print "Skipping certstatus check as not supported by $server_name server\n";
+                    next;
+                }
                 load_config($server_name, $aspect); # update with any aspect-specific settings
                 indir $server_name => sub {
                     my $tests = load_tests($server_name, $aspect);
                     test_cmp_http_aspect($server_name, $aspect, $tests);
                 };
             };
-            stop_mock_server($pid) if $pid;
+            stop_server($server_name, $pid) if $pid;
+            ok(1, "$server_name server has terminated");
           }
         }
     };
@@ -214,7 +232,7 @@ sub load_tests {
     my $result_dir = result_dir();
     my @result;
 
-    open(my $data, '<', $file) || die "Cannot open $file for reading: $!";
+    open(my $data, '<', $file) || die "Cannot open '$file' for reading: $!";
   LOOP:
     while (my $line = <$data>) {
         chomp $line;
@@ -237,7 +255,7 @@ sub load_tests {
         if ($line =~ m/,\s*-no_proxy\s*,(.*?)(,|$)/) {
             $noproxy = $1;
         } elsif ($server_host eq "127.0.0.1") {
-            # do connections to localhost (e.g., Mock server) without proxy
+            # do connections to localhost (e.g., mock server) without proxy
             $line =~ s{-section,,}{-section,,-no_proxy,127.0.0.1,} ;
         }
         if ($line =~ m/,\s*-proxy\s*,/) {
@@ -245,7 +263,8 @@ sub load_tests {
         } else {
             $line =~ s{-section,,}{-section,,-proxy,$proxy,};
         }
-        $line =~ s{-section,,}{-section,,-certout,$result_dir/test.cert.pem,};
+        $line =~ s{-section,,}{-section,,-certout,$result_dir/test.cert.pem,}
+            if $aspect ne "commands" || $line =~ m/,\s*-cmd\s*,\s*(ir|cr|p10cr|kur)\s*,/;
         $line =~ s{-section,,}{-config,../$test_config,-section,$server_name $aspect,};
 
         my @fields = grep /\S/, split ",", $line;
@@ -253,40 +272,62 @@ sub load_tests {
         s/^\s+// for (@fields); # remove leading whitespace from elements
         s/\s+$// for (@fields); # remove trailing whitespace from elements
         s/^\"(\".*?\")\"$/$1/ for (@fields); # remove escaping from quotation marks from elements
-        my $expected_exit = $fields[$column];
+        my $expected_result = $fields[$column];
         my $description = 1;
         my $title = $fields[$description];
-        next LOOP if (!defined($expected_exit)
-                      || ($expected_exit ne 0 && $expected_exit ne 1));
+        next LOOP if (!defined($expected_result)
+                      || ($expected_result ne 0 && $expected_result ne 1));
+        next LOOP if ($line =~ m/-server,\[.*:.*\]/ && !have_IPv6());
         @fields = grep {$_ ne 'BLANK'} @fields[$description + 1 .. @fields - 1];
-        push @result, [$title, \@fields, $expected_exit];
+        push @result, [$title, \@fields, $expected_result];
     }
     close($data);
     return \@result;
 }
 
-sub mock_server_pid {
-    return `lsof -iTCP:$server_port` =~ m/\n\S+\s+(\d+)\s+[^\n]+LISTEN/s ? $1 : 0;
-}
-
-sub start_mock_server {
-    my $args = $_[0]; # optional further CLI arguments
-    my $dir = bldtop_dir("");
-    my $cmd = "LD_LIBRARY_PATH=$dir DYLD_LIBRARY_PATH=$dir " .
-        bldtop_dir($app) . " -config server.cnf $args";
-    my $pid = mock_server_pid();
-    if ($pid) {
-        print "Mock server already running with pid=$pid\n";
-        return $pid;
-    }
+sub start_server {
+    my $server_name = shift;
+    my $args = shift; # optional further CLI arguments
+    my $cmd = cmdstr(app([@app, '-config', 'server.cnf',
+                          $args ? $args : ()]), display => 1);
     print "Current directory is ".getcwd()."\n";
-    print "Launching mock server listening on port $server_port: $cmd\n";
-    return system("$cmd &") == 0 # start in background, check for success
-        ? (sleep 1, mock_server_pid()) : 0;
+    print "Launching $server_name server: $cmd\n";
+    my $pid = open($server_fh, "$cmd|");
+    unless ($pid) {
+        print "Error launching $cmd, cannot obtain $server_name server PID";
+        return 0;
+    }
+    print "$server_name server PID=$pid\n";
+
+    if ($server_host eq '*' || $server_port == 0) {
+        # Find out the actual server host and port and possibly different PID
+        $pid = 0;
+        while (<$server_fh>) {
+            print "$server_name server output: $_";
+            next if m/using section/;
+            s/\R$//;                # Better chomp
+            ($server_host, $server_port, $pid) = ($1, $2, $3)
+                if /^ACCEPT\s(.*?):(\d+) PID=(\d+)$/;
+            last; # Do not loop further to prevent hangs on server misbehavior
+        }
+        $server_host = "[::1]" if $server_host eq "[::]";
+        $server_host = "127.0.0.1" if $server_host eq "0.0.0.0";
+    }
+    unless ($server_port > 0) {
+        stop_server($server_name, $pid) if $pid;
+        print "Cannot get expected output from the $server_name server";
+        return 0;
+    }
+    $kur_port = $server_port if $kur_port eq "\$server_port";
+    $pbm_port = $server_port if $pbm_port eq "\$server_port";
+    $server_tls = $server_port if $server_tls;
+    return $pid;
 }
 
-sub stop_mock_server {
-    my $pid = $_[0];
-    print "Killing mock server with pid=$pid\n";
-    system("kill $pid") if $pid;
+sub stop_server {
+    my $server_name = shift;
+    my $pid = shift;
+    print "Killing $server_name server with PID=$pid\n";
+    kill('KILL', $pid);
+    waitpid($pid, 0);
 }

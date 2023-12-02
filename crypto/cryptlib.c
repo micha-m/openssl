@@ -1,5 +1,5 @@
 /*
- * Copyright 1998-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1998-2023 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -8,11 +8,11 @@
  * https://www.openssl.org/source/license.html
  */
 
-#include "e_os.h"
+#include "internal/e_os.h"
 #include "crypto/cryptlib.h"
 #include <openssl/safestack.h>
 
-#if defined(_WIN32)
+#if defined(_WIN32) && !defined(OPENSSL_SYS_UEFI)
 # include <tchar.h>
 # include <signal.h>
 # ifdef __WATCOMC__
@@ -194,12 +194,6 @@ void OPENSSL_showfatal(const char *fmta, ...)
 # if defined(_WIN32_WINNT) && _WIN32_WINNT>=0x0333
 #  ifdef OPENSSL_SYS_WIN_CORE
     /* ONECORE is always NONGUI and NT >= 0x0601 */
-
-    /*
-    * TODO: (For non GUI and no std error cases)
-    * Add event logging feature here.
-    */
-
 #   if !defined(NDEBUG)
         /*
         * We are in a situation where we tried to report a critical
@@ -262,7 +256,7 @@ void OPENSSL_die(const char *message, const char *file, int line)
 {
     OPENSSL_showfatal("%s:%d: OpenSSL internal error: %s\n",
                       file, line, message);
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(OPENSSL_SYS_UEFI)
     abort();
 #else
     /*

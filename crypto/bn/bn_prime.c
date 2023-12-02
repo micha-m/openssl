@@ -145,10 +145,8 @@ int BN_generate_prime_ex2(BIGNUM *ret, int bits, int safe,
     }
 
     mods = OPENSSL_zalloc(sizeof(*mods) * NUMPRIMES);
-    if (mods == NULL) {
-        ERR_raise(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+    if (mods == NULL)
         return 0;
-    }
 
     BN_CTX_start(ctx);
     t = BN_CTX_get(ctx);
@@ -230,19 +228,19 @@ int BN_generate_prime_ex(BIGNUM *ret, int bits, int safe,
 int BN_is_prime_ex(const BIGNUM *a, int checks, BN_CTX *ctx_passed,
                    BN_GENCB *cb)
 {
-    return bn_check_prime_int(a, checks, ctx_passed, 0, cb);
+    return ossl_bn_check_prime(a, checks, ctx_passed, 0, cb);
 }
 
 int BN_is_prime_fasttest_ex(const BIGNUM *w, int checks, BN_CTX *ctx,
                             int do_trial_division, BN_GENCB *cb)
 {
-    return bn_check_prime_int(w, checks, ctx, do_trial_division, cb);
+    return ossl_bn_check_prime(w, checks, ctx, do_trial_division, cb);
 }
 #endif
 
 /* Wrapper around bn_is_prime_int that sets the minimum number of checks */
-int bn_check_prime_int(const BIGNUM *w, int checks, BN_CTX *ctx,
-                       int do_trial_division, BN_GENCB *cb)
+int ossl_bn_check_prime(const BIGNUM *w, int checks, BN_CTX *ctx,
+                        int do_trial_division, BN_GENCB *cb)
 {
     int min_checks = bn_mr_min_checks(BN_num_bits(w));
 
@@ -252,9 +250,20 @@ int bn_check_prime_int(const BIGNUM *w, int checks, BN_CTX *ctx,
     return bn_is_prime_int(w, checks, ctx, do_trial_division, cb);
 }
 
+/*
+ * Use this only for key generation.
+ * It always uses trial division. The number of checks
+ * (MR rounds) passed in is used without being clamped to a minimum value.
+ */
+int ossl_bn_check_generated_prime(const BIGNUM *w, int checks, BN_CTX *ctx,
+                                  BN_GENCB *cb)
+{
+    return bn_is_prime_int(w, checks, ctx, 1, cb);
+}
+
 int BN_check_prime(const BIGNUM *p, BN_CTX *ctx, BN_GENCB *cb)
 {
-    return bn_check_prime_int(p, 0, ctx, 1, cb);
+    return ossl_bn_check_prime(p, 0, ctx, 1, cb);
 }
 
 /*
@@ -308,9 +317,10 @@ static int bn_is_prime_int(const BIGNUM *w, int checks, BN_CTX *ctx,
         goto err;
 #endif
 
-    ret = ossl_bn_miller_rabin_is_prime(w, checks, ctx, cb, 0, &status);
-    if (!ret)
+    if (!ossl_bn_miller_rabin_is_prime(w, checks, ctx, cb, 0, &status)) {
+        ret = -1;
         goto err;
+    }
     ret = (status == BN_PRIMETEST_PROBABLY_PRIME);
 err:
 #ifndef FIPS_MODULE
@@ -386,7 +396,7 @@ int ossl_bn_miller_rabin_is_prime(const BIGNUM *w, int iterations, BN_CTX *ctx,
     /* (Step 4) */
     for (i = 0; i < iterations; ++i) {
         /* (Step 4.1) obtain a Random string of bits b where 1 < b < w-1 */
-        if (!BN_priv_rand_range_ex(b, w3, ctx)
+        if (!BN_priv_rand_range_ex(b, w3, 0, ctx)
                 || !BN_add_word(b, 2)) /* 1 < b < w-1 */
             goto err;
 
@@ -483,8 +493,8 @@ static int probable_prime(BIGNUM *rnd, int bits, int safe, prime_t *mods,
     BN_ULONG maxdelta = BN_MASK2 - primes[trial_divisions - 1];
 
  again:
-    /* TODO: Not all primes are private */
-    if (!BN_priv_rand_ex(rnd, bits, BN_RAND_TOP_TWO, BN_RAND_BOTTOM_ODD, ctx))
+    if (!BN_priv_rand_ex(rnd, bits, BN_RAND_TOP_TWO, BN_RAND_BOTTOM_ODD, 0,
+                         ctx))
         return 0;
     if (safe && !BN_set_bit(rnd, 1))
         return 0;
@@ -550,7 +560,7 @@ static int probable_prime_dh(BIGNUM *rnd, int bits, int safe, prime_t *mods,
         maxdelta = BN_MASK2 - BN_get_word(add);
 
  again:
-    if (!BN_rand_ex(rnd, bits, BN_RAND_TOP_ONE, BN_RAND_BOTTOM_ODD, ctx))
+    if (!BN_rand_ex(rnd, bits, BN_RAND_TOP_ONE, BN_RAND_BOTTOM_ODD, 0, ctx))
         goto err;
 
     /* we need ((rnd-rem) % add) == 0 */

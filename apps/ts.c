@@ -1,5 +1,5 @@
 /*
- * Copyright 2006-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -77,7 +77,7 @@ static X509_STORE *create_cert_store(const char *CApath, const char *CAfile,
 static int verify_cb(int ok, X509_STORE_CTX *ctx);
 
 typedef enum OPTION_choice {
-    OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
+    OPT_COMMON,
     OPT_ENGINE, OPT_CONFIG, OPT_SECTION, OPT_QUERY, OPT_DATA,
     OPT_DIGEST, OPT_TSPOLICY, OPT_NO_NONCE, OPT_CERT,
     OPT_IN, OPT_TOKEN_IN, OPT_OUT, OPT_TOKEN_OUT, OPT_TEXT,
@@ -168,7 +168,7 @@ int ts_main(int argc, char **argv)
     char *in = NULL, *out = NULL, *queryfile = NULL, *passin = NULL;
     char *inkey = NULL, *signer = NULL, *chain = NULL, *CApath = NULL;
     char *CAstore = NULL;
-    const EVP_MD *md = NULL;
+    EVP_MD *md = NULL;
     OPTION_CHOICE o, mode = OPT_ERR;
     int ret = 1, no_nonce = 0, cert = 0, text = 0;
     int vpmtouched = 0;
@@ -181,6 +181,7 @@ int ts_main(int argc, char **argv)
     if ((vpm = X509_VERIFY_PARAM_new()) == NULL)
         goto end;
 
+    opt_set_unknown_name("digest");
     prog = opt_init(argc, argv, ts_options);
     while ((o = opt_next()) != OPT_EOF) {
         switch (o) {
@@ -204,8 +205,10 @@ int ts_main(int argc, char **argv)
         case OPT_QUERY:
         case OPT_REPLY:
         case OPT_VERIFY:
-            if (mode != OPT_ERR)
+            if (mode != OPT_ERR) {
+                BIO_printf(bio_err, "%s: Must give only one of -query, -reply, or -verify\n", prog);
                 goto opthelp;
+            }
             mode = o;
             break;
         case OPT_DATA:
@@ -288,17 +291,18 @@ int ts_main(int argc, char **argv)
     }
 
     /* No extra arguments. */
-    argc = opt_num_rest();
-    if (argc != 0 || mode == OPT_ERR)
+    if (!opt_check_rest_arg(NULL))
         goto opthelp;
+    if (mode == OPT_ERR) {
+        BIO_printf(bio_err, "%s: Must give one of -query, -reply, or -verify\n", prog);
+        goto opthelp;
+    }
 
     if (!app_RAND_load())
         goto end;
 
-    if (digestname != NULL) {
-        if (!opt_md(digestname, &md))
-            goto opthelp;
-    }
+    if (!opt_md(digestname, &md))
+        goto opthelp;
     if (mode == OPT_REPLY && passin &&
         !app_passwd(passin, NULL, &password, NULL)) {
         BIO_printf(bio_err, "Error getting password.\n");
@@ -343,6 +347,7 @@ int ts_main(int argc, char **argv)
 
  end:
     X509_VERIFY_PARAM_free(vpm);
+    EVP_MD_free(md);
     NCONF_free(conf);
     OPENSSL_free(password);
     return ret;
@@ -370,7 +375,7 @@ static CONF *load_config_file(const char *configfile)
         const char *p;
 
         BIO_printf(bio_err, "Using configuration from %s\n", configfile);
-        p = NCONF_get_string(conf, NULL, ENV_OID_FILE);
+        p = app_conf_try_string(conf, NULL, ENV_OID_FILE);
         if (p != NULL) {
             BIO *oid_bio = BIO_new_file(p, "r");
             if (!oid_bio)
@@ -379,8 +384,7 @@ static CONF *load_config_file(const char *configfile)
                 OBJ_create_objects(oid_bio);
                 BIO_free_all(oid_bio);
             }
-        } else
-            ERR_clear_error();
+        }
         if (!add_oid_section(conf))
             ERR_print_errors(bio_err);
     }
@@ -459,7 +463,7 @@ static TS_REQ *create_query(BIO *data_bio, const char *digest, const EVP_MD *md,
         goto err;
     if ((algo = X509_ALGOR_new()) == NULL)
         goto err;
-    if ((algo->algorithm = OBJ_nid2obj(EVP_MD_type(md))) == NULL)
+    if ((algo->algorithm = OBJ_nid2obj(EVP_MD_get_type(md))) == NULL)
         goto err;
     if ((algo->parameter = ASN1_TYPE_new()) == NULL)
         goto err;
@@ -508,7 +512,7 @@ static int create_digest(BIO *input, const char *digest, const EVP_MD *md,
     int rv = 0;
     EVP_MD_CTX *md_ctx = NULL;
 
-    md_value_len = EVP_MD_size(md);
+    md_value_len = EVP_MD_get_size(md);
     if (md_value_len < 0)
         return 0;
 
@@ -528,7 +532,7 @@ static int create_digest(BIO *input, const char *digest, const EVP_MD *md,
         }
         if (!EVP_DigestFinal(md_ctx, *md_value, NULL))
             goto err;
-        md_value_len = EVP_MD_size(md);
+        md_value_len = EVP_MD_get_size(md);
     } else {
         long digest_len;
 
@@ -975,6 +979,10 @@ static X509_STORE *create_cert_store(const char *CApath, const char *CAfile,
     const char *propq = app_get0_propq();
 
     cert_ctx = X509_STORE_new();
+    if (cert_ctx == NULL) {
+        BIO_printf(bio_err, "memory allocation failure\n");
+        return NULL;
+    }
     X509_STORE_set_verify_cb(cert_ctx, verify_cb);
     if (CApath != NULL) {
         lookup = X509_STORE_add_lookup(cert_ctx, X509_LOOKUP_hash_dir());
@@ -982,7 +990,7 @@ static X509_STORE *create_cert_store(const char *CApath, const char *CAfile,
             BIO_printf(bio_err, "memory allocation failure\n");
             goto err;
         }
-        if (!X509_LOOKUP_add_dir(lookup, CApath, X509_FILETYPE_PEM)) {
+        if (X509_LOOKUP_add_dir(lookup, CApath, X509_FILETYPE_PEM) <= 0) {
             BIO_printf(bio_err, "Error loading directory %s\n", CApath);
             goto err;
         }
@@ -994,8 +1002,8 @@ static X509_STORE *create_cert_store(const char *CApath, const char *CAfile,
             BIO_printf(bio_err, "memory allocation failure\n");
             goto err;
         }
-        if (!X509_LOOKUP_load_file_ex(lookup, CAfile, X509_FILETYPE_PEM, libctx,
-                                      propq)) {
+        if (X509_LOOKUP_load_file_ex(lookup, CAfile, X509_FILETYPE_PEM, libctx,
+                                      propq) <= 0) {
             BIO_printf(bio_err, "Error loading file %s\n", CAfile);
             goto err;
         }
@@ -1007,7 +1015,7 @@ static X509_STORE *create_cert_store(const char *CApath, const char *CAfile,
             BIO_printf(bio_err, "memory allocation failure\n");
             goto err;
         }
-        if (!X509_LOOKUP_load_store_ex(lookup, CAstore, libctx, propq)) {
+        if (X509_LOOKUP_load_store_ex(lookup, CAstore, libctx, propq) <= 0) {
             BIO_printf(bio_err, "Error loading store URI %s\n", CAstore);
             goto err;
         }

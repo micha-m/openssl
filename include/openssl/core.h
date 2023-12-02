@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2019-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -32,8 +32,8 @@ typedef struct openssl_core_ctx_st OPENSSL_CORE_CTX;
 typedef struct ossl_core_bio_st OSSL_CORE_BIO;
 
 /*
- * Dispatch table element.  function_id numbers are defined further down,
- * see macros with '_FUNC' in their names.
+ * Dispatch table element.  function_id numbers and the functions are defined
+ * in core_dispatch.h, see macros with 'OSSL_CORE_MAKE_FUNC' in their names.
  *
  * An array of these is always terminated by function_id == 0
  */
@@ -41,6 +41,9 @@ struct ossl_dispatch_st {
     int function_id;
     void (*function)(void);
 };
+
+# define OSSL_DISPATCH_END \
+    { 0, NULL }
 
 /*
  * Other items, essentially an int<->pointer map element.
@@ -195,7 +198,7 @@ typedef int (OSSL_provider_init_fn)(const OSSL_CORE_HANDLE *handle,
 #  pragma names save
 #  pragma names uppercase,truncated
 # endif
-extern OSSL_provider_init_fn OSSL_provider_init;
+OPENSSL_EXPORT OSSL_provider_init_fn OSSL_provider_init;
 # ifdef __VMS
 #  pragma names restore
 # endif

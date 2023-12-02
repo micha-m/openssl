@@ -18,22 +18,22 @@
 #include <openssl/bn.h>
 #include <openssl/rsa.h>
 #include <openssl/objects.h>
-#include <openssl/x509.h>
-#include "crypto/x509.h"
-#ifndef OPENSSL_NO_MD2
-# include <openssl/md2.h> /* uses MD2_DIGEST_LENGTH */
-#endif
-#ifndef OPENSSL_NO_MD4
-# include <openssl/md4.h> /* uses MD4_DIGEST_LENGTH */
-#endif
-#ifndef OPENSSL_NO_MD5
-# include <openssl/md5.h> /* uses MD5_DIGEST_LENGTH */
-#endif
-#ifndef OPENSSL_NO_MDC2
-# include <openssl/mdc2.h> /* uses MDC2_DIGEST_LENGTH */
-#endif
-#ifndef OPENSSL_NO_RMD160
-# include <openssl/ripemd.h> /* uses RIPEMD160_DIGEST_LENGTH */
+#ifndef FIPS_MODULE
+# ifndef OPENSSL_NO_MD2
+#  include <openssl/md2.h> /* uses MD2_DIGEST_LENGTH */
+# endif
+# ifndef OPENSSL_NO_MD4
+#  include <openssl/md4.h> /* uses MD4_DIGEST_LENGTH */
+# endif
+# ifndef OPENSSL_NO_MD5
+#  include <openssl/md5.h> /* uses MD5_DIGEST_LENGTH */
+# endif
+# ifndef OPENSSL_NO_MDC2
+#  include <openssl/mdc2.h> /* uses MDC2_DIGEST_LENGTH */
+# endif
+# ifndef OPENSSL_NO_RMD160
+#  include <openssl/ripemd.h> /* uses RIPEMD160_DIGEST_LENGTH */
+# endif
 #endif
 #include <openssl/sha.h> /* uses SHA???_DIGEST_LENGTH */
 #include "crypto/rsa.h"
@@ -258,10 +258,8 @@ static int encode_pkcs1(unsigned char **out, size_t *out_len, int type,
     }
     dig_info_len = di_prefix_len + m_len;
     dig_info = OPENSSL_malloc(dig_info_len);
-    if (dig_info == NULL) {
-        ERR_raise(ERR_LIB_RSA, ERR_R_MALLOC_FAILURE);
+    if (dig_info == NULL)
         return 0;
-    }
     memcpy(dig_info, di_prefix, di_prefix_len);
     memcpy(dig_info + di_prefix_len, m, m_len);
 
@@ -280,7 +278,7 @@ int RSA_sign(int type, const unsigned char *m, unsigned int m_len,
 
 #ifndef FIPS_MODULE
     if (rsa->meth->rsa_sign != NULL)
-        return rsa->meth->rsa_sign(type, m, m_len, sigret, siglen, rsa);
+        return rsa->meth->rsa_sign(type, m, m_len, sigret, siglen, rsa) > 0;
 #endif /* FIPS_MODULE */
 
     /* Compute the encoded digest. */
@@ -343,10 +341,8 @@ int ossl_rsa_verify(int type, const unsigned char *m, unsigned int m_len,
 
     /* Recover the encoded digest. */
     decrypt_buf = OPENSSL_malloc(siglen);
-    if (decrypt_buf == NULL) {
-        ERR_raise(ERR_LIB_RSA, ERR_R_MALLOC_FAILURE);
+    if (decrypt_buf == NULL)
         goto err;
-    }
 
     len = RSA_public_decrypt((int)siglen, sigbuf, decrypt_buf, rsa,
                              RSA_PKCS1_PADDING);

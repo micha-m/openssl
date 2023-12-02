@@ -81,10 +81,14 @@ i2d_PublicKey() does the same for public keys.
 i2d_KeyParams() does the same for key parameters.
 These functions are similar to the d2i_X509() functions; see L<d2i_X509(3)>.
 i2d_PrivateKey_bio() and i2d_PrivateKey_fp() do the same thing except that they
-encode to a B<BIO> or B<FILE> respectrively. Again, these work similarly to the
+encode to a B<BIO> or B<FILE> respectively. Again, these work similarly to the
 functions described in L<d2i_X509(3)>.
 
 =head1 NOTES
+
+All the functions that operate on data in memory update the data pointer I<*pp>
+after a successful operation, just like the other d2i and i2d functions;
+see L<d2i_X509(3)>.
 
 All these functions use DER format and unencrypted keys. Applications wishing
 to encrypt or decrypt private keys should use other functions such as
@@ -99,14 +103,15 @@ EC_GROUP.
 The d2i_PrivateKey_ex(), d2i_PrivateKey(), d2i_AutoPrivateKey_ex(),
 d2i_AutoPrivateKey(), d2i_PrivateKey_ex_bio(), d2i_PrivateKey_bio(),
 d2i_PrivateKey_ex_fp(), d2i_PrivateKey_fp(), d2i_PublicKey(), d2i_KeyParams()
-and d2i_KeyParams_bio() functions return a valid B<EVP_PKEY> structure or NULL
-if an error occurs. The error code can be obtained by calling
-L<ERR_get_error(3)>.
+and d2i_KeyParams_bio() functions return a valid B<EVP_PKEY> structure or NULL if
+an error occurs. The error code can be obtained by calling L<ERR_get_error(3)>.
 
-i2d_PrivateKey(), i2d_PrivateKey_bio(), i2d_PrivateKey_fp(), i2d_PublicKey(),
-i2d_KeyParams() i2d_KeyParams_bio() return the number of bytes successfully
-encoded or a negative value if an error occurs. The error code can be obtained
-by calling L<ERR_get_error(3)>.
+i2d_PrivateKey(), i2d_PublicKey() and i2d_KeyParams() return the number of
+bytes successfully encoded or a negative value if an error occurs. The error
+code can be obtained by calling L<ERR_get_error(3)>.
+
+i2d_PrivateKey_bio(), i2d_PrivateKey_fp() and i2d_KeyParams_bio() return 1 if
+successfully encoded or zero if an error occurs.
 
 =head1 SEE ALSO
 
@@ -120,7 +125,7 @@ d2i_AutoPrivateKey_ex() were added in OpenSSL 3.0.
 
 =head1 COPYRIGHT
 
-Copyright 2017-2020 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2017-2021 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

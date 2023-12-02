@@ -11,19 +11,6 @@
 #include "internal/cryptlib.h"
 #include "bn_local.h"
 
-/*-
- * TODO list
- *
- * 1. Check a bunch of "(words+1)" type hacks in various bignum functions and
- * check they can be safely removed.
- *  - Check +1 and other ugliness in BN_from_montgomery()
- *
- * 2. Consider allowing a BN_new_ex() that, at least, lets you specify an
- * appropriate 'block' size that will be honoured by bn_expand_internal() to
- * prevent piddly little reallocations. OTOH, profiling bignum expansions in
- * BN_CTX doesn't show this to be a big issue.
- */
-
 /* How many bignums are in each "pool item"; */
 #define BN_CTX_POOL_SIZE        16
 /* The stack frame info is resizing, set a first-time expansion size; */
@@ -132,10 +119,8 @@ BN_CTX *BN_CTX_new_ex(OSSL_LIB_CTX *ctx)
 {
     BN_CTX *ret;
 
-    if ((ret = OPENSSL_zalloc(sizeof(*ret))) == NULL) {
-        ERR_raise(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+    if ((ret = OPENSSL_zalloc(sizeof(*ret))) == NULL)
         return NULL;
-    }
     /* Initialise the structure */
     BN_POOL_init(&ret->pool);
     BN_STACK_init(&ret->stack);
@@ -281,10 +266,8 @@ static int BN_STACK_push(BN_STACK *st, unsigned int idx)
             st->size ? (st->size * 3 / 2) : BN_CTX_START_FRAMES;
         unsigned int *newitems;
 
-        if ((newitems = OPENSSL_malloc(sizeof(*newitems) * newsize)) == NULL) {
-            ERR_raise(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+        if ((newitems = OPENSSL_malloc(sizeof(*newitems) * newsize)) == NULL)
             return 0;
-        }
         if (st->depth)
             memcpy(newitems, st->indexes, sizeof(*newitems) * st->depth);
         OPENSSL_free(st->indexes);
@@ -335,10 +318,8 @@ static BIGNUM *BN_POOL_get(BN_POOL *p, int flag)
     if (p->used == p->size) {
         BN_POOL_ITEM *item;
 
-        if ((item = OPENSSL_malloc(sizeof(*item))) == NULL) {
-            ERR_raise(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+        if ((item = OPENSSL_malloc(sizeof(*item))) == NULL)
             return NULL;
-        }
         for (loop = 0, bn = item->vals; loop++ < BN_CTX_POOL_SIZE; bn++) {
             bn_init(bn);
             if ((flag & BN_FLG_SECURE) != 0)

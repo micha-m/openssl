@@ -83,14 +83,14 @@ with provider data coming from the same provider, for example keys
 with the L<KEYMGMT|provider-keymgmt(7)> provider.
 
 All "functions" mentioned here are passed as function pointers between
-F<libcrypto> and the provider in B<OSSL_DISPATCH> arrays via
-B<OSSL_ALGORITHM> arrays that are returned by the provider's
+F<libcrypto> and the provider in L<OSSL_DISPATCH(3)> arrays via
+L<OSSL_ALGORITHM(3)> arrays that are returned by the provider's
 provider_query_operation() function
 (see L<provider-base(7)/Provider Functions>).
 
 All these "functions" have a corresponding function type definition
 named B<OSSL_FUNC_{name}_fn>, and a helper function to retrieve the
-function pointer from an B<OSSL_DISPATCH> element named
+function pointer from an L<OSSL_DISPATCH(3)> element named
 B<OSSL_FUNC_{name}>.
 For example, the "function" OSSL_FUNC_encoder_encode() has these:
 
@@ -103,7 +103,7 @@ For example, the "function" OSSL_FUNC_encoder_encode() has these:
  static ossl_inline OSSL_FUNC_encoder_encode_fn
      OSSL_FUNC_encoder_encode(const OSSL_DISPATCH *opf);
 
-B<OSSL_DISPATCH> arrays are indexed by numbers that are provided as
+L<OSSL_DISPATCH(3)> arrays are indexed by numbers that are provided as
 macros in L<openssl-core_dispatch.h(7)>, as follows:
 
  OSSL_FUNC_encoder_get_params          OSSL_FUNC_ENCODER_GET_PARAMS
@@ -133,8 +133,12 @@ Properties can be used to further specify details about an implementation:
 
 =item output
 
-This property is used to specify what type of output implementation
-produces.  OpenSSL providers recognize the following output types:
+This property is used to specify what type of output the implementation
+produces.
+
+This property is I<mandatory>.
+
+OpenSSL providers recognize the following output types:
 
 =over 4
 
@@ -168,6 +172,8 @@ This property is used to specify the structure that is used for the encoded
 object.  An example could be C<pkcs8>, to specify explicitly that an object
 (presumably an asymmetric key pair, in this case) will be wrapped in a
 PKCS#8 structure as part of the encoding.
+
+This property is I<optional>.
 
 =back
 
@@ -207,7 +213,7 @@ from I<params> that it recognises.  Unrecognised parameters should be
 ignored.
 Passing NULL for I<params> should return true.
 
-OSSL_FUNC_encoder_settable_ctx_params() returns a constant B<OSSL_PARAM>
+OSSL_FUNC_encoder_settable_ctx_params() returns a constant L<OSSL_PARAM(3)>
 array describing the parameters that OSSL_FUNC_encoder_set_ctx_params()
 can handle.
 
@@ -236,50 +242,9 @@ OSSL_FUNC_encoder_encode() should take a provider-native object (in
 I<obj_raw>) or an object abstraction (in I<obj_abstract>), and should output
 the object in encoded form to the B<OSSL_CORE_BIO>.  The I<selection> bits,
 if relevant, should determine in greater detail what will be output.
-The encoding functions also take an B<OSSL_PASSPHRASE_CALLBACK> function
+The encoding functions also take an L<OSSL_PASSPHRASE_CALLBACK(3)> function
 pointer along with a pointer to application data I<cbarg>, which should be
 used when a pass phrase prompt is needed.
-
-=head2 Encoder parameters
-
-The ENCODER implementation itself has parameters that can be used to
-determine how it fits in a chain of encoders:
-
-=over 4
-
-=item "input-type" (B<OSSL_ENCODER_PARAM_INPUT_TYPE>) <UTF8 string>
-
-This is used to specify a distinct type name for the object passed as
-I<obj_raw> to OSSL_FUNC_encoder_encode.
-
-This parameter is an optional parameter, to be used if the name of the
-implementation can be ambiguous because of aliases, and something more
-deterministic is needed.
-
-=item "output-type" (B<OSSL_ENCODER_PARAM_OUTPUT_TYPE>) <UTF8 string>
-
-This is used to specify the output type for an ENCODER implementation.
-
-This parameter is I<mandatory>.
-
-=for comment If we had functionality to get the value of a specific property
-in a set of properties, it would be possible to determine the output type
-from the C<output> property.
-
-=item "output-structure" (B<OSSL_ENCODER_PARAM_OUTPUT_STRUCTURE>) <UTF8 string>
-
-This is used to specify the outermost output structure for an ENCODER
-implementation.
-
-For example, an output of type "DER" for a key pair could be structured
-using PKCS#8, or a key type specific structure, such as PKCS#1 for RSA
-keys.
-
-=for comment If we had functionality to get the value of a specific property
-in a set of properties, it would be possible to determine the output
-structure from the C<structure> property.
-
-=back
 
 =head2 Encoder operation parameters
 
@@ -339,7 +304,7 @@ OSSL_FUNC_encoder_set_ctx_params() returns 1, unless a recognised
 parameter was invalid or caused an error, for which 0 is returned.
 
 OSSL_FUNC_encoder_settable_ctx_params() returns a pointer to an array of
-constant B<OSSL_PARAM> elements.
+constant L<OSSL_PARAM(3)> elements.
 
 OSSL_FUNC_encoder_does_selection() returns 1 if the encoder implementation
 supports any of the I<selection> bits, otherwise 0.

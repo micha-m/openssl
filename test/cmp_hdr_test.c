@@ -1,5 +1,5 @@
 /*
- * Copyright 2007-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2007-2023 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright Nokia 2007-2019
  * Copyright Siemens AG 2015-2019
  *
@@ -161,22 +161,32 @@ static int test_HDR_set1_recipient(void)
 
 static int execute_HDR_update_messageTime_test(CMP_HDR_TEST_FIXTURE *fixture)
 {
-    struct tm hdrtm;
+    struct tm hdrtm, tmptm;
     time_t hdrtime, before, after, now;
 
     now = time(NULL);
-    before = mktime(gmtime(&now));
+    /*
+     * Trial and error reveals that passing the return value from gmtime
+     * directly to mktime in a mingw 32 bit build gives unexpected results. To
+     * work around this we take a copy of the return value first.
+     */
+    tmptm = *gmtime(&now);
+    before = mktime(&tmptm);
+
     if (!TEST_true(ossl_cmp_hdr_update_messageTime(fixture->hdr)))
         return 0;
     if (!TEST_true(ASN1_TIME_to_tm(fixture->hdr->messageTime, &hdrtm)))
         return 0;
 
     hdrtime = mktime(&hdrtm);
-    if (!TEST_true(before <= hdrtime))
+
+    if (!TEST_time_t_le(before, hdrtime))
         return 0;
     now = time(NULL);
-    after = mktime(gmtime(&now));
-    return TEST_true(hdrtime <= after);
+    tmptm = *gmtime(&now);
+    after = mktime(&tmptm);
+
+    return TEST_time_t_le(hdrtime, after);
 }
 
 static int test_HDR_update_messageTime(void)
@@ -323,12 +333,12 @@ execute_HDR_generalInfo_push1_items_test(CMP_HDR_TEST_FIXTURE *fixture)
     if (!TEST_ptr(asn1int))
         return 0;
 
-    if (!TEST_ptr(val)) {
+    if (!TEST_ptr(val)
+            || !TEST_true(ASN1_INTEGER_set(asn1int, 88))) {
         ASN1_INTEGER_free(asn1int);
         return 0;
     }
 
-    ASN1_INTEGER_set(asn1int, 88);
     ASN1_TYPE_set(val, V_ASN1_INTEGER, asn1int);
     if (!TEST_ptr(itav = OSSL_CMP_ITAV_create(OBJ_txt2obj(oid, 1), val))) {
         ASN1_TYPE_free(val);
@@ -383,7 +393,6 @@ static int test_HDR_set_and_check_implicit_confirm(void)
     return result;
 }
 
-
 static int execute_HDR_init_test(CMP_HDR_TEST_FIXTURE *fixture)
 {
     ASN1_OCTET_STRING *header_nonce, *header_transactionID;
@@ -403,8 +412,8 @@ static int execute_HDR_init_test(CMP_HDR_TEST_FIXTURE *fixture)
                                               fixture->cmp_ctx->senderNonce)))
         return 0;
     header_transactionID = OSSL_CMP_HDR_get0_transactionID(fixture->hdr);
-    if (!TEST_true(0 == ASN1_OCTET_STRING_cmp(header_transactionID,
-                                              fixture->cmp_ctx->transactionID)))
+    if (!TEST_true(ASN1_OCTET_STRING_cmp(header_transactionID,
+                                         fixture->cmp_ctx->transactionID) == 0))
         return 0;
 
     header_nonce = OSSL_CMP_HDR_get0_recipNonce(fixture->hdr);
@@ -453,7 +462,6 @@ static int test_HDR_init_with_subject(void)
     return result;
 }
 
-
 void cleanup_tests(void)
 {
     return;
@@ -480,10 +488,5 @@ int setup_tests(void)
     /* also tests internal function ossl_cmp_hdr_get_pvno(): */
     ADD_TEST(test_HDR_init_with_ref);
     ADD_TEST(test_HDR_init_with_subject);
-    /*
-     *  TODO make sure that total number of tests (here currently 24) is shown,
-     *  also for other cmp_*text.c. Currently the test drivers always show 1.
-     */
-
     return 1;
 }

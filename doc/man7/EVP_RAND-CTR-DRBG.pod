@@ -50,12 +50,11 @@ The supported parameters are:
 
 These parameters work as described in L<EVP_RAND(3)/PARAMETERS>.
 
-=item "use_derivation_function" (B<OSSL_DRBG_PARAM_USE_DF>) <int>
+=item "use_derivation_function" (B<OSSL_DRBG_PARAM_USE_DF>) <integer>
 
 This Boolean indicates if a derivation function should be used or not.
 A nonzero value (the default) uses the derivation function.  A zero value
-does not.  The FIPS provider always uses the derivation function and attempts
-to set this value result in an error.
+does not.
 
 =back
 
@@ -64,7 +63,7 @@ to set this value result in an error.
 A context for CTR DRBG can be obtained by calling:
 
  EVP_RAND *rand = EVP_RAND_fetch(NULL, "CTR-DRBG", NULL);
- EVP_RAND_CTX *rctx = EVP_RAND_CTX_new(rand);
+ EVP_RAND_CTX *rctx = EVP_RAND_CTX_new(rand, NULL);
 
 =head1 EXAMPLES
 

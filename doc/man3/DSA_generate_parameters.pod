@@ -8,18 +8,18 @@ DSA_generate_parameters_ex, DSA_generate_parameters - generate DSA parameters
 
  #include <openssl/dsa.h>
 
-Deprecated since OpenSSL 3.0, can be hidden entirely by defining
-B<OPENSSL_API_COMPAT> with a suitable version value, see
-L<openssl_user_macros(7)>:
+The following functions have been deprecated since OpenSSL 3.0, and can be
+hidden entirely by defining B<OPENSSL_API_COMPAT> with a suitable version value,
+see L<openssl_user_macros(7)>:
 
  int DSA_generate_parameters_ex(DSA *dsa, int bits,
                                 const unsigned char *seed, int seed_len,
                                 int *counter_ret, unsigned long *h_ret,
                                 BN_GENCB *cb);
 
-Deprecated since OpenSSL 0.9.8, can be hidden entirely by defining
-B<OPENSSL_API_COMPAT> with a suitable version value, see
-L<openssl_user_macros(7)>:
+The following functions have been deprecated since OpenSSL 0.9.8, and can be
+hidden entirely by defining B<OPENSSL_API_COMPAT> with a suitable version value,
+see L<openssl_user_macros(7)>:
 
  DSA *DSA_generate_parameters(int bits, unsigned char *seed, int seed_len,
                               int *counter_ret, unsigned long *h_ret,
@@ -51,7 +51,7 @@ called as shown below. For information on the BN_GENCB structure and the
 BN_GENCB_call function discussed below, refer to
 L<BN_generate_prime(3)>.
 
-DSA_generate_prime() is similar to DSA_generate_prime_ex() but
+DSA_generate_parameters() is similar to DSA_generate_parameters_ex() but
 expects an old-style callback function; see
 L<BN_generate_prime(3)> for information on the old-style callback.
 

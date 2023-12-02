@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2020-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -7,7 +7,7 @@
  * https://www.openssl.org/source/license.html
  */
 
-#include "e_os.h"                /* To get strncasecmp() on Windows */
+/* This file has quite some overlap with engines/e_loader_attic.c */
 
 #include <string.h>
 #include <sys/stat.h>
@@ -26,6 +26,7 @@
 #include "internal/cryptlib.h"
 #include "internal/o_dir.h"
 #include "crypto/decoder.h"
+#include "crypto/ctype.h"        /* ossl_isdigit() */
 #include "prov/implementations.h"
 #include "prov/bio.h"
 #include "file_store_local.h"
@@ -54,9 +55,7 @@ static OSSL_FUNC_store_close_fn file_close;
  * passes that on to the data callback; this decoder is created with
  * internal OpenSSL functions, thereby bypassing the need for a surrounding
  * provider.  This is ok, since this is a local decoder, not meant for
- * public consumption.  It also uses the libcrypto internal decoder
- * setup function ossl_decoder_ctx_setup_for_pkey(), to allow the
- * last resort decoder to be added first (and thereby be executed last).
+ * public consumption.
  * Finally, it sets up its own construct and cleanup functions.
  *
  * Essentially, that makes this implementation a kind of glorified decoder.
@@ -149,16 +148,12 @@ static OSSL_DECODER_CLEANUP file_load_cleanup;
  *
  */
 static struct file_ctx_st *file_open_stream(BIO *source, const char *uri,
-                                            const char *input_type,
                                             void *provctx)
 {
     struct file_ctx_st *ctx;
 
-    if ((ctx = new_file_ctx(IS_FILE, uri, provctx)) == NULL
-        || (input_type != NULL
-            && (ctx->_.file.input_type =
-                OPENSSL_strdup(input_type)) == NULL)) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+    if ((ctx = new_file_ctx(IS_FILE, uri, provctx)) == NULL) {
+        ERR_raise(ERR_LIB_PROV, ERR_R_PROV_LIB);
         goto err;
     }
 
@@ -175,8 +170,8 @@ static void *file_open_dir(const char *path, const char *uri, void *provctx)
     struct file_ctx_st *ctx;
 
     if ((ctx = new_file_ctx(IS_DIR, uri, provctx)) == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
-        goto err;
+        ERR_raise(ERR_LIB_PROV, ERR_R_PROV_LIB);
+        return NULL;
     }
 
     ctx->_.dir.last_entry = OPENSSL_DIR_read(&ctx->_.dir.ctx, path);
@@ -204,7 +199,7 @@ static void *file_open(void *provctx, const char *uri)
         unsigned int check_absolute:1;
     } path_data[2];
     size_t path_data_n = 0, i;
-    const char *path;
+    const char *path, *p = uri, *q;
     BIO *bio;
 
     ERR_set_mark();
@@ -216,20 +211,18 @@ static void *file_open(void *provctx, const char *uri)
     path_data[path_data_n++].path = uri;
 
     /*
-     * Second step, if the URI appears to start with the 'file' scheme,
+     * Second step, if the URI appears to start with the "file" scheme,
      * extract the path and make that the second path to check.
      * There's a special case if the URI also contains an authority, then
      * the full URI shouldn't be used as a path anywhere.
      */
-    if (strncasecmp(uri, "file:", 5) == 0) {
-        const char *p = &uri[5];
-
-        if (strncmp(&uri[5], "//", 2) == 0) {
+    if (CHECK_AND_SKIP_CASE_PREFIX(p, "file:")) {
+        q = p;
+        if (CHECK_AND_SKIP_CASE_PREFIX(q, "//")) {
             path_data_n--;           /* Invalidate using the full URI */
-            if (strncasecmp(&uri[7], "localhost/", 10) == 0) {
-                p = &uri[16];
-            } else if (uri[7] == '/') {
-                p = &uri[7];
+            if (CHECK_AND_SKIP_CASE_PREFIX(q, "localhost/")
+                    || CHECK_AND_SKIP_CASE_PREFIX(q, "/")) {
+                p = q - 1;
             } else {
                 ERR_clear_last_mark();
                 ERR_raise(ERR_LIB_PROV, PROV_R_URI_AUTHORITY_UNSUPPORTED);
@@ -239,7 +232,7 @@ static void *file_open(void *provctx, const char *uri)
 
         path_data[path_data_n].check_absolute = 1;
 #ifdef _WIN32
-        /* Windows file: URIs with a drive letter start with a / */
+        /* Windows "file:" URIs with a drive letter start with a '/' */
         if (p[0] == '/' && p[2] == ':' && p[3] == '/') {
             char c = tolower(p[1]);
 
@@ -285,7 +278,7 @@ static void *file_open(void *provctx, const char *uri)
     if (S_ISDIR(st.st_mode))
         ctx = file_open_dir(path, uri, provctx);
     else if ((bio = BIO_new_file(path, "rb")) == NULL
-             || (ctx = file_open_stream(bio, uri, NULL, provctx)) == NULL)
+             || (ctx = file_open_stream(bio, uri, provctx)) == NULL)
         BIO_free_all(bio);
 
     return ctx;
@@ -299,7 +292,7 @@ void *file_attach(void *provctx, OSSL_CORE_BIO *cin)
     if (new_bio == NULL)
         return NULL;
 
-    ctx = file_open_stream(new_bio, NULL, NULL, provctx);
+    ctx = file_open_stream(new_bio, NULL, provctx);
     if (ctx == NULL)
         BIO_free(new_bio);
     return ctx;
@@ -316,6 +309,7 @@ static const OSSL_PARAM *file_settable_ctx_params(void *provctx)
         OSSL_PARAM_utf8_string(OSSL_STORE_PARAM_PROPERTIES, NULL, 0),
         OSSL_PARAM_int(OSSL_STORE_PARAM_EXPECT, NULL),
         OSSL_PARAM_octet_string(OSSL_STORE_PARAM_SUBJECT, NULL, 0),
+        OSSL_PARAM_utf8_string(OSSL_STORE_PARAM_INPUT_TYPE, NULL, 0),
         OSSL_PARAM_END
     };
     return known_settable_ctx_params;
@@ -329,12 +323,22 @@ static int file_set_ctx_params(void *loaderctx, const OSSL_PARAM params[])
     if (params == NULL)
         return 1;
 
-    p = OSSL_PARAM_locate_const(params, OSSL_STORE_PARAM_PROPERTIES);
-    if (p != NULL) {
-        OPENSSL_free(ctx->_.file.propq);
-        ctx->_.file.propq = NULL;
-        if (!OSSL_PARAM_get_utf8_string(p, &ctx->_.file.propq, 0))
-            return 0;
+    if (ctx->type != IS_DIR) {
+        /* these parameters are ignored for directories */
+        p = OSSL_PARAM_locate_const(params, OSSL_STORE_PARAM_PROPERTIES);
+        if (p != NULL) {
+            OPENSSL_free(ctx->_.file.propq);
+            ctx->_.file.propq = NULL;
+            if (!OSSL_PARAM_get_utf8_string(p, &ctx->_.file.propq, 0))
+                return 0;
+        }
+        p = OSSL_PARAM_locate_const(params, OSSL_STORE_PARAM_INPUT_TYPE);
+        if (p != NULL) {
+            OPENSSL_free(ctx->_.file.input_type);
+            ctx->_.file.input_type = NULL;
+            if (!OSSL_PARAM_get_utf8_string(p, &ctx->_.file.input_type, 0))
+                return 0;
+        }
     }
     p = OSSL_PARAM_locate_const(params, OSSL_STORE_PARAM_EXPECT);
     if (p != NULL && !OSSL_PARAM_get_int(p, &ctx->expected_type))
@@ -409,18 +413,14 @@ void file_load_cleanup(void *construct_data)
 
 static int file_setup_decoders(struct file_ctx_st *ctx)
 {
-    EVP_PKEY *dummy; /* for ossl_decoder_ctx_setup_for_pkey() */
     OSSL_LIB_CTX *libctx = ossl_prov_ctx_get0_libctx(ctx->provctx);
-    OSSL_DECODER *to_obj = NULL; /* Last resort decoder */
-    OSSL_DECODER_INSTANCE *to_obj_inst = NULL;
-    OSSL_DECODER_CLEANUP *old_cleanup = NULL;
-    void *old_construct_data = NULL;
+    const OSSL_ALGORITHM *to_algo = NULL;
     int ok = 0;
 
     /* Setup for this session, so only if not already done */
     if (ctx->_.file.decoderctx == NULL) {
         if ((ctx->_.file.decoderctx = OSSL_DECODER_CTX_new()) == NULL) {
-            ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_PROV, ERR_R_OSSL_DECODER_LIB);
             goto err;
         }
 
@@ -432,57 +432,66 @@ static int file_setup_decoders(struct file_ctx_st *ctx)
         }
 
         /*
-         * Create the internal last resort decoder implementation together
-         * with a "decoder instance".
-         * The decoder doesn't need any identification or to be attached to
-         * any provider, since it's only used locally.
+         * Where applicable, set the outermost structure name.
+         * The goal is to avoid the STORE object types that are
+         * potentially password protected but aren't interesting
+         * for this load.
          */
-        to_obj = ossl_decoder_from_algorithm(0, &ossl_der_to_obj_algorithm,
-                                             NULL);
-        if (to_obj == NULL)
-            goto err;
-        to_obj_inst = ossl_decoder_instance_new(to_obj, ctx->provctx);
-        if (to_obj_inst == NULL)
-            goto err;
+        switch (ctx->expected_type) {
+        case OSSL_STORE_INFO_CERT:
+            if (!OSSL_DECODER_CTX_set_input_structure(ctx->_.file.decoderctx,
+                                                      "Certificate")) {
+                ERR_raise(ERR_LIB_PROV, ERR_R_OSSL_DECODER_LIB);
+                goto err;
+            }
+            break;
+        case OSSL_STORE_INFO_CRL:
+            if (!OSSL_DECODER_CTX_set_input_structure(ctx->_.file.decoderctx,
+                                                      "CertificateList")) {
+                ERR_raise(ERR_LIB_PROV, ERR_R_OSSL_DECODER_LIB);
+                goto err;
+            }
+            break;
+        default:
+            break;
+        }
 
-        if (!ossl_decoder_ctx_add_decoder_inst(ctx->_.file.decoderctx,
-                                               to_obj_inst)) {
+        for (to_algo = ossl_any_to_obj_algorithm;
+             to_algo->algorithm_names != NULL;
+             to_algo++) {
+            OSSL_DECODER *to_obj = NULL;
+            OSSL_DECODER_INSTANCE *to_obj_inst = NULL;
+
+            /*
+             * Create the internal last resort decoder implementation
+             * together with a "decoder instance".
+             * The decoder doesn't need any identification or to be
+             * attached to any provider, since it's only used locally.
+             */
+            to_obj = ossl_decoder_from_algorithm(0, to_algo, NULL);
+            if (to_obj != NULL)
+                to_obj_inst = ossl_decoder_instance_new(to_obj, ctx->provctx);
+            OSSL_DECODER_free(to_obj);
+            if (to_obj_inst == NULL)
+                goto err;
+
+            if (!ossl_decoder_ctx_add_decoder_inst(ctx->_.file.decoderctx,
+                                                   to_obj_inst)) {
+                ossl_decoder_instance_free(to_obj_inst);
+                ERR_raise(ERR_LIB_PROV, ERR_R_OSSL_DECODER_LIB);
+                goto err;
+            }
+        }
+        /* Add on the usual extra decoders */
+        if (!OSSL_DECODER_CTX_add_extra(ctx->_.file.decoderctx,
+                                        libctx, ctx->_.file.propq)) {
             ERR_raise(ERR_LIB_PROV, ERR_R_OSSL_DECODER_LIB);
             goto err;
         }
 
         /*
-         * OSSL_DECODER_INSTANCE shouldn't be freed from this point on.
-         * That's going to happen whenever the OSSL_DECODER_CTX is freed.
-         */
-        to_obj_inst = NULL;
-
-        /*
-         * Add on the usual decoder context for keys, with a dummy object.
-         * Since we're setting up our own constructor, we don't need to care
-         * more than that...
-         */
-        if (!ossl_decoder_ctx_setup_for_pkey(ctx->_.file.decoderctx,
-                                             &dummy, NULL,
-                                             libctx, ctx->_.file.propq)
-            || !OSSL_DECODER_CTX_add_extra(ctx->_.file.decoderctx,
-                                           libctx, ctx->_.file.propq)) {
-            ERR_raise(ERR_LIB_PROV, ERR_R_OSSL_DECODER_LIB);
-            goto err;
-        }
-
-        /*
-         * Then we throw away the installed finalizer data, and install our
-         * own instead.
-         */
-        old_cleanup = OSSL_DECODER_CTX_get_cleanup(ctx->_.file.decoderctx);
-        old_construct_data =
-            OSSL_DECODER_CTX_get_construct_data(ctx->_.file.decoderctx);
-        if (old_cleanup != NULL)
-            old_cleanup(old_construct_data);
-
-        /*
-         * Set the hooks.
+         * Then install our constructor hooks, which just passes decoded
+         * data to the load callback
          */
         if (!OSSL_DECODER_CTX_set_construct(ctx->_.file.decoderctx,
                                             file_load_construct)
@@ -495,7 +504,6 @@ static int file_setup_decoders(struct file_ctx_st *ctx)
 
     ok = 1;
  err:
-    OSSL_DECODER_free(to_obj);
     return ok;
 }
 
@@ -504,6 +512,7 @@ static int file_load_file(struct file_ctx_st *ctx,
                           OSSL_PASSPHRASE_CALLBACK *pw_cb, void *pw_cbarg)
 {
     struct file_load_data_st data;
+    int ret, err;
 
     /* Setup the decoders (one time shot per session */
 
@@ -519,7 +528,16 @@ static int file_load_file(struct file_ctx_st *ctx,
 
     /* Launch */
 
-    return OSSL_DECODER_from_bio(ctx->_.file.decoderctx, ctx->_.file.file);
+    ERR_set_mark();
+    ret = OSSL_DECODER_from_bio(ctx->_.file.decoderctx, ctx->_.file.file);
+    if (BIO_eof(ctx->_.file.file)
+        && ((err = ERR_peek_last_error()) != 0)
+        && ERR_GET_LIB(err) == ERR_LIB_OSSL_DECODER
+        && ERR_GET_REASON(err) == ERR_R_UNSUPPORTED)
+        ERR_pop_to_mark();
+    else
+        ERR_clear_last_mark();
+    return ret;
 }
 
 /*-
@@ -538,10 +556,8 @@ static char *file_name_to_uri(struct file_ctx_st *ctx, const char *name)
             + strlen(name) + 1 /* \0 */;
 
         data = OPENSSL_zalloc(calculated_length);
-        if (data == NULL) {
-            ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        if (data == NULL)
             return NULL;
-        }
 
         OPENSSL_strlcat(data, ctx->uri, calculated_length);
         OPENSSL_strlcat(data, pathsep, calculated_length);
@@ -553,6 +569,7 @@ static char *file_name_to_uri(struct file_ctx_st *ctx, const char *name)
 static int file_name_check(struct file_ctx_st *ctx, const char *name)
 {
     const char *p = NULL;
+    size_t len = strlen(ctx->_.dir.search_name);
 
     /* If there are no search criteria, all names are accepted */
     if (ctx->_.dir.search_name[0] == '\0')
@@ -567,11 +584,10 @@ static int file_name_check(struct file_ctx_st *ctx, const char *name)
     /*
      * First, check the basename
      */
-    if (strncasecmp(name, ctx->_.dir.search_name,
-                    sizeof(ctx->_.dir.search_name) - 1) != 0
-        || name[sizeof(ctx->_.dir.search_name) - 1] != '.')
+    if (OPENSSL_strncasecmp(name, ctx->_.dir.search_name, len) != 0
+        || name[len] != '.')
         return 0;
-    p = &name[sizeof(ctx->_.dir.search_name)];
+    p = &name[len + 1];
 
     /*
      * Then, if the expected type is a CRL, check that the extension starts
@@ -590,9 +606,9 @@ static int file_name_check(struct file_ctx_st *ctx, const char *name)
      * Last, check that the rest of the extension is a decimal number, at
      * least one digit long.
      */
-    if (!isdigit(*p))
+    if (!isdigit((unsigned char)*p))
         return 0;
-    while (isdigit(*p))
+    while (isdigit((unsigned char)*p))
         p++;
 
 #ifdef __VMS
@@ -601,7 +617,7 @@ static int file_name_check(struct file_ctx_st *ctx, const char *name)
      */
     if (*p == ';')
         for (p++; *p != '\0'; p++)
-            if (!ossl_isdigit(*p))
+            if (!ossl_isdigit((unsigned char)*p))
                 break;
 #endif
 
@@ -764,5 +780,5 @@ const OSSL_DISPATCH ossl_file_store_functions[] = {
     { OSSL_FUNC_STORE_LOAD, (void (*)(void))file_load },
     { OSSL_FUNC_STORE_EOF, (void (*)(void))file_eof },
     { OSSL_FUNC_STORE_CLOSE, (void (*)(void))file_close },
-    { 0, NULL },
+    OSSL_DISPATCH_END,
 };

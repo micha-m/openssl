@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -7,7 +7,7 @@
  * https://www.openssl.org/source/license.html
  */
 
-#include "e_os.h"
+#include "internal/e_os.h"
 #include "internal/cryptlib.h"
 #include "crypto/cryptlib.h"
 #include <stdio.h>
@@ -26,11 +26,17 @@ static CRYPTO_free_fn free_impl = CRYPTO_free;
 #if !defined(OPENSSL_NO_CRYPTO_MDEBUG) && !defined(FIPS_MODULE)
 # include "internal/tsan_assist.h"
 
+# ifdef TSAN_REQUIRES_LOCKING
+#  define INCREMENT(x) /* empty */
+#  define LOAD(x) 0
+# else  /* TSAN_REQUIRES_LOCKING */
 static TSAN_QUALIFIER int malloc_count;
 static TSAN_QUALIFIER int realloc_count;
 static TSAN_QUALIFIER int free_count;
 
-# define INCREMENT(x) tsan_counter(&(x))
+#  define INCREMENT(x) tsan_counter(&(x))
+#  define LOAD(x)      tsan_load(&x)
+# endif /* TSAN_REQUIRES_LOCKING */
 
 static char *md_failstring;
 static long md_count;
@@ -79,11 +85,11 @@ void CRYPTO_get_mem_functions(CRYPTO_malloc_fn *malloc_fn,
 void CRYPTO_get_alloc_counts(int *mcount, int *rcount, int *fcount)
 {
     if (mcount != NULL)
-        *mcount = tsan_load(&malloc_count);
+        *mcount = LOAD(malloc_count);
     if (rcount != NULL)
-        *rcount = tsan_load(&realloc_count);
+        *rcount = LOAD(realloc_count);
     if (fcount != NULL)
-        *fcount = tsan_load(&free_count);
+        *fcount = LOAD(free_count);
 }
 
 /*
@@ -94,6 +100,9 @@ void CRYPTO_get_alloc_counts(int *mcount, int *rcount, int *fcount)
  *    or    100;100@25;0
  * This means 100 mallocs succeed, then next 100 fail 25% of the time, and
  * all remaining (count is zero) succeed.
+ * The failure percentge can have 2 digits after the comma.  For example:
+ *          0@0.01
+ * This means 0.01% of all allocations will fail.
  */
 static void parseit(void)
 {
@@ -106,26 +115,27 @@ static void parseit(void)
     /* Get the count (atol will stop at the @ if there), and percentage */
     md_count = atol(md_failstring);
     atsign = strchr(md_failstring, '@');
-    md_fail_percent = atsign == NULL ? 0 : atoi(atsign + 1);
+    md_fail_percent = atsign == NULL ? 0 : (int)(atof(atsign + 1) * 100 + 0.5);
 
     if (semi != NULL)
         md_failstring = semi;
 }
 
 /*
- * Windows doesn't have random(), but it has rand()
+ * Windows doesn't have random() and srandom(), but it has rand() and srand().
  * Some rand() implementations aren't good, but we're not
  * dealing with secure randomness here.
  */
 # ifdef _WIN32
 #  define random() rand()
+#  define srandom(seed) srand(seed)
 # endif
 /*
  * See if the current malloc should fail.
  */
 static int shouldfail(void)
 {
-    int roll = (int)(random() % 100);
+    int roll = (int)(random() % 10000);
     int shoulditfail = roll < md_fail_percent;
 # ifndef _WIN32
 /* suppressed on Windows as POSIX-like file descriptors are non-inheritable */
@@ -159,14 +169,22 @@ void ossl_malloc_setup_failures(void)
         parseit();
     if ((cp = getenv("OPENSSL_MALLOC_FD")) != NULL)
         md_tracefd = atoi(cp);
+    if ((cp = getenv("OPENSSL_MALLOC_SEED")) != NULL)
+        srandom(atoi(cp));
 }
 #endif
 
 void *CRYPTO_malloc(size_t num, const char *file, int line)
 {
+    void *ptr;
+
     INCREMENT(malloc_count);
-    if (malloc_impl != CRYPTO_malloc)
-        return malloc_impl(num, file, line);
+    if (malloc_impl != CRYPTO_malloc) {
+        ptr = malloc_impl(num, file, line);
+        if (ptr != NULL || num == 0)
+            return ptr;
+        goto err;
+    }
 
     if (num == 0)
         return NULL;
@@ -181,7 +199,20 @@ void *CRYPTO_malloc(size_t num, const char *file, int line)
         allow_customize = 0;
     }
 
-    return malloc(num);
+    ptr = malloc(num);
+    if (ptr != NULL)
+        return ptr;
+ err:
+    /*
+     * ossl_err_get_state_int() in err.c uses CRYPTO_zalloc(num, NULL, 0) for
+     * ERR_STATE allocation. Prevent mem alloc error loop while reporting error.
+     */
+    if (file != NULL || line != 0) {
+        ERR_new();
+        ERR_set_debug(file, line, NULL);
+        ERR_set_error(ERR_LIB_CRYPTO, ERR_R_MALLOC_FAILURE, NULL);
+    }
+    return NULL;
 }
 
 void *CRYPTO_zalloc(size_t num, const char *file, int line)
@@ -189,7 +220,6 @@ void *CRYPTO_zalloc(size_t num, const char *file, int line)
     void *ret;
 
     ret = CRYPTO_malloc(num, file, line);
-    FAILTEST();
     if (ret != NULL)
         memset(ret, 0, num);
 
@@ -202,7 +232,6 @@ void *CRYPTO_realloc(void *str, size_t num, const char *file, int line)
     if (realloc_impl != CRYPTO_realloc)
         return realloc_impl(str, num, file, line);
 
-    FAILTEST();
     if (str == NULL)
         return CRYPTO_malloc(num, file, line);
 
@@ -211,6 +240,7 @@ void *CRYPTO_realloc(void *str, size_t num, const char *file, int line)
         return NULL;
     }
 
+    FAILTEST();
     return realloc(str, num);
 }
 
@@ -279,12 +309,12 @@ int CRYPTO_set_mem_debug(int flag)
 int CRYPTO_mem_debug_push(const char *info, const char *file, int line)
 {
     (void)info; (void)file; (void)line;
-    return -1;
+    return 0;
 }
 
 int CRYPTO_mem_debug_pop(void)
 {
-    return -1;
+    return 0;
 }
 
 void CRYPTO_mem_debug_malloc(void *addr, size_t num, int flag,

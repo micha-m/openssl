@@ -1,5 +1,5 @@
 /*
- * Copyright 2007-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2007-2023 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright Nokia 2007-2019
  * Copyright Siemens AG 2015-2019
  *
@@ -12,6 +12,7 @@
 #include "helpers/cmp_testlib.h"
 
 static const char *ir_protected_f;
+static const char *genm_prot_Ed_f;
 static const char *ir_unprotected_f;
 static const char *ip_PBM_f;
 
@@ -27,6 +28,7 @@ typedef struct test_fixture {
     X509 *cert;
     STACK_OF(X509) *certs;
     STACK_OF(X509) *chain;
+    int with_ss;
     int callback_arg;
     int expected;
 } CMP_PROTECT_TEST_FIXTURE;
@@ -36,15 +38,17 @@ static OSSL_PROVIDER *default_null_provider = NULL, *provider = NULL;
 
 static void tear_down(CMP_PROTECT_TEST_FIXTURE *fixture)
 {
-    OSSL_CMP_CTX_free(fixture->cmp_ctx);
-    OSSL_CMP_MSG_free(fixture->msg);
-    OSSL_CMP_PKISI_free(fixture->si);
+    if (fixture != NULL) {
+        OSSL_CMP_CTX_free(fixture->cmp_ctx);
+        OSSL_CMP_MSG_free(fixture->msg);
+        OSSL_CMP_PKISI_free(fixture->si);
 
-    OPENSSL_free(fixture->mem);
-    sk_X509_free(fixture->certs);
-    sk_X509_free(fixture->chain);
+        OPENSSL_free(fixture->mem);
+        sk_X509_free(fixture->certs);
+        sk_X509_free(fixture->chain);
 
-    OPENSSL_free(fixture);
+        OPENSSL_free(fixture);
+    }
 }
 
 static CMP_PROTECT_TEST_FIXTURE *set_up(const char *const test_case_name)
@@ -61,10 +65,13 @@ static CMP_PROTECT_TEST_FIXTURE *set_up(const char *const test_case_name)
     return fixture;
 }
 
-static EVP_PKEY *loadedprivkey = NULL;
-static EVP_PKEY *loadedpubkey = NULL;
-static EVP_PKEY *loadedkey = NULL;
-static X509 *cert = NULL;
+static EVP_PKEY *prot_RSA_key = NULL;
+#ifndef OPENSSL_NO_ECX
+static EVP_PKEY *prot_Ed_key = NULL;
+static OSSL_CMP_MSG *genm_protected_Ed;
+#endif
+static EVP_PKEY *server_key = NULL;
+static X509 *server_cert = NULL;
 static unsigned char rand_data[OSSL_CMP_TRANSACTIONID_LENGTH];
 static OSSL_CMP_MSG *ir_unprotected, *ir_protected;
 static X509 *endentity1 = NULL, *endentity2 = NULL,
@@ -93,33 +100,20 @@ static int execute_calc_protection_pbmac_test(CMP_PROTECT_TEST_FIXTURE *fixture)
 }
 
 /*
- * This function works similarly to parts of CMP_verify_signature in cmp_vfy.c,
- * but without the need for a OSSL_CMP_CTX or a X509 certificate
+ * This function works similarly to parts of verify_signature in cmp_vfy.c,
+ * but without the need for an OSSL_CMP_CTX or an X509 certificate.
  */
 static int verify_signature(OSSL_CMP_MSG *msg,
                             ASN1_BIT_STRING *protection,
                             EVP_PKEY *pkey, EVP_MD *digest)
 {
     OSSL_CMP_PROTECTEDPART prot_part;
-    unsigned char *prot_part_der = NULL;
-    int len;
-    EVP_MD_CTX *ctx = NULL;
-    int res;
 
     prot_part.header = OSSL_CMP_MSG_get0_header(msg);
     prot_part.body = msg->body;
-    len = i2d_OSSL_CMP_PROTECTEDPART(&prot_part, &prot_part_der);
-    res =
-        TEST_int_ge(len, 0)
-        && TEST_ptr(ctx = EVP_MD_CTX_new())
-        && TEST_true(EVP_DigestVerifyInit(ctx, NULL, digest, NULL, pkey))
-        && TEST_int_eq(EVP_DigestVerify(ctx, protection->data,
-                                        protection->length,
-                                        prot_part_der, len), 1);
-    /* cleanup */
-    EVP_MD_CTX_free(ctx);
-    OPENSSL_free(prot_part_der);
-    return res;
+    return ASN1_item_verify_ex(ASN1_ITEM_rptr(OSSL_CMP_PROTECTEDPART),
+                               msg->header->protectionAlg, protection,
+                               &prot_part, NULL, pkey, libctx, NULL) > 0;
 }
 
 /* Calls OSSL_CMP_calc_protection and compares and verifies signature */
@@ -129,11 +123,9 @@ static int execute_calc_protection_signature_test(CMP_PROTECT_TEST_FIXTURE *
     ASN1_BIT_STRING *protection =
         ossl_cmp_calc_protection(fixture->cmp_ctx, fixture->msg);
     int ret = (TEST_ptr(protection)
-                   && TEST_true(ASN1_STRING_cmp(protection,
-                                                fixture->msg->protection) == 0)
-                   && TEST_true(verify_signature(fixture->msg, protection,
-                                                 fixture->pubkey,
-                                                 fixture->cmp_ctx->digest)));
+               && TEST_true(verify_signature(fixture->msg, protection,
+                                             fixture->pubkey,
+                                             fixture->cmp_ctx->digest)));
 
     ASN1_BIT_STRING_free(protection);
     return ret;
@@ -142,7 +134,7 @@ static int execute_calc_protection_signature_test(CMP_PROTECT_TEST_FIXTURE *
 static int test_cmp_calc_protection_no_key_no_secret(void)
 {
     SETUP_TEST_FIXTURE(CMP_PROTECT_TEST_FIXTURE, set_up);
-    if (!TEST_ptr(fixture->msg = load_pkimsg(ir_unprotected_f))
+    if (!TEST_ptr(fixture->msg = load_pkimsg(ir_unprotected_f, libctx))
             || !TEST_ptr(fixture->msg->header->protectionAlg =
                          X509_ALGOR_new() /* no specific alg needed here */)) {
         tear_down(fixture);
@@ -156,15 +148,30 @@ static int test_cmp_calc_protection_no_key_no_secret(void)
 static int test_cmp_calc_protection_pkey(void)
 {
     SETUP_TEST_FIXTURE(CMP_PROTECT_TEST_FIXTURE, set_up);
-    fixture->pubkey = loadedpubkey;
-    if (!TEST_true(OSSL_CMP_CTX_set1_pkey(fixture->cmp_ctx, loadedprivkey))
-            || !TEST_ptr(fixture->msg = load_pkimsg(ir_protected_f))) {
+    fixture->pubkey = prot_RSA_key;
+    if (!TEST_true(OSSL_CMP_CTX_set1_pkey(fixture->cmp_ctx, prot_RSA_key))
+        || !TEST_ptr(fixture->msg = load_pkimsg(ir_protected_f, libctx))) {
         tear_down(fixture);
         fixture = NULL;
     }
     EXECUTE_TEST(execute_calc_protection_signature_test, tear_down);
     return result;
 }
+
+#ifndef OPENSSL_NO_ECX
+static int test_cmp_calc_protection_pkey_Ed(void)
+{
+    SETUP_TEST_FIXTURE(CMP_PROTECT_TEST_FIXTURE, set_up);
+    fixture->pubkey = prot_Ed_key;
+    if (!TEST_true(OSSL_CMP_CTX_set1_pkey(fixture->cmp_ctx, prot_Ed_key))
+        || !TEST_ptr(fixture->msg = load_pkimsg(genm_prot_Ed_f, libctx))) {
+        tear_down(fixture);
+        fixture = NULL;
+    }
+    EXECUTE_TEST(execute_calc_protection_signature_test, tear_down);
+    return result;
+}
+#endif
 
 static int test_cmp_calc_protection_pbmac(void)
 {
@@ -173,7 +180,7 @@ static int test_cmp_calc_protection_pbmac(void)
     SETUP_TEST_FIXTURE(CMP_PROTECT_TEST_FIXTURE, set_up);
     if (!TEST_true(OSSL_CMP_CTX_set1_secretValue(fixture->cmp_ctx,
                                                  sec_insta, sizeof(sec_insta)))
-            || !TEST_ptr(fixture->msg = load_pkimsg(ip_PBM_f))) {
+            || !TEST_ptr(fixture->msg = load_pkimsg(ip_PBM_f, libctx))) {
         tear_down(fixture);
         fixture = NULL;
     }
@@ -235,8 +242,9 @@ static int test_MSG_protect_with_certificate_and_key(void)
     if (!TEST_ptr(fixture->msg =
                   OSSL_CMP_MSG_dup(ir_unprotected))
             || !TEST_true(SET_OPT_UNPROTECTED_SEND(fixture->cmp_ctx, 0))
-            || !TEST_true(OSSL_CMP_CTX_set1_pkey(fixture->cmp_ctx, loadedkey))
-            || !TEST_true(OSSL_CMP_CTX_set1_cert(fixture->cmp_ctx, cert))) {
+            || !TEST_true(OSSL_CMP_CTX_set1_pkey(fixture->cmp_ctx, server_key))
+            || !TEST_true(OSSL_CMP_CTX_set1_cert(fixture->cmp_ctx,
+                                                 server_cert))) {
         tear_down(fixture);
         fixture = NULL;
     }
@@ -254,11 +262,11 @@ static int test_MSG_protect_certificate_based_without_cert(void)
     if (!TEST_ptr(fixture->msg =
                   OSSL_CMP_MSG_dup(ir_unprotected))
             || !TEST_true(SET_OPT_UNPROTECTED_SEND(ctx, 0))
-            || !TEST_true(OSSL_CMP_CTX_set0_newPkey(ctx, 1, loadedkey))) {
+            || !TEST_true(OSSL_CMP_CTX_set0_newPkey(ctx, 1, server_key))) {
         tear_down(fixture);
         fixture = NULL;
     }
-    EVP_PKEY_up_ref(loadedkey);
+    EVP_PKEY_up_ref(server_key);
     EXECUTE_TEST(execute_MSG_protect_test, tear_down);
     return result;
 }
@@ -333,13 +341,13 @@ static int execute_cmp_build_cert_chain_test(CMP_PROTECT_TEST_FIXTURE *fixture)
     OSSL_CMP_CTX *ctx = fixture->cmp_ctx;
     X509_STORE *store;
     STACK_OF(X509) *chain =
-        ossl_cmp_build_cert_chain(ctx->libctx, ctx->propq, NULL,
-                                  fixture->certs, fixture->cert);
+        X509_build_chain(fixture->cert, fixture->certs, NULL,
+                         fixture->with_ss, ctx->libctx, ctx->propq);
 
     if (TEST_ptr(chain)) {
         /* Check whether chain built is equal to the expected one */
         ret = TEST_int_eq(0, STACK_OF_X509_cmp(chain, fixture->chain));
-        sk_X509_pop_free(chain, X509_free);
+        OSSL_STACK_OF_X509_free(chain);
     }
     if (!ret)
         return 0;
@@ -348,13 +356,13 @@ static int execute_cmp_build_cert_chain_test(CMP_PROTECT_TEST_FIXTURE *fixture)
             && TEST_true(X509_STORE_add_cert(store, root))) {
         X509_VERIFY_PARAM_set_flags(X509_STORE_get0_param(store),
                                     X509_V_FLAG_NO_CHECK_TIME);
-        chain = ossl_cmp_build_cert_chain(ctx->libctx, ctx->propq,
-                                          store, fixture->certs, fixture->cert);
+        chain = X509_build_chain(fixture->cert, fixture->certs, store,
+                                 fixture->with_ss, ctx->libctx, ctx->propq);
         ret = TEST_int_eq(fixture->expected, chain != NULL);
         if (ret && chain != NULL) {
             /* Check whether chain built is equal to the expected one */
             ret = TEST_int_eq(0, STACK_OF_X509_cmp(chain, fixture->chain));
-            sk_X509_pop_free(chain, X509_free);
+            OSSL_STACK_OF_X509_free(chain);
         }
     }
     X509_STORE_free(store);
@@ -365,6 +373,7 @@ static int test_cmp_build_cert_chain(void)
 {
     SETUP_TEST_FIXTURE(CMP_PROTECT_TEST_FIXTURE, set_up);
     fixture->expected = 1;
+    fixture->with_ss = 0;
     fixture->cert = endentity2;
     if (!TEST_ptr(fixture->certs = sk_X509_new_null())
             || !TEST_ptr(fixture->chain = sk_X509_new_null())
@@ -376,7 +385,13 @@ static int test_cmp_build_cert_chain(void)
         tear_down(fixture);
         fixture = NULL;
     }
-    EXECUTE_TEST(execute_cmp_build_cert_chain_test, tear_down);
+    if (fixture != NULL) {
+        result = execute_cmp_build_cert_chain_test(fixture);
+        fixture->with_ss = 1;
+        if (result && TEST_true(sk_X509_push(fixture->chain, root)))
+            result = execute_cmp_build_cert_chain_test(fixture);
+    }
+    tear_down(fixture);
     return result;
 }
 
@@ -384,6 +399,7 @@ static int test_cmp_build_cert_chain_missing_intermediate(void)
 {
     SETUP_TEST_FIXTURE(CMP_PROTECT_TEST_FIXTURE, set_up);
     fixture->expected = 0;
+    fixture->with_ss = 0;
     fixture->cert = endentity2;
     if (!TEST_ptr(fixture->certs = sk_X509_new_null())
             || !TEST_ptr(fixture->chain = sk_X509_new_null())
@@ -401,6 +417,7 @@ static int test_cmp_build_cert_chain_no_root(void)
 {
     SETUP_TEST_FIXTURE(CMP_PROTECT_TEST_FIXTURE, set_up);
     fixture->expected = 1;
+    fixture->with_ss = 0;
     fixture->cert = endentity2;
     if (!TEST_ptr(fixture->certs = sk_X509_new_null())
             || !TEST_ptr(fixture->chain = sk_X509_new_null())
@@ -415,10 +432,28 @@ static int test_cmp_build_cert_chain_no_root(void)
     return result;
 }
 
+static int test_cmp_build_cert_chain_only_root(void)
+{
+    SETUP_TEST_FIXTURE(CMP_PROTECT_TEST_FIXTURE, set_up);
+    fixture->expected = 1;
+    fixture->with_ss = 0; /* still chain must include the only cert (root) */
+    fixture->cert = root;
+    if (!TEST_ptr(fixture->certs = sk_X509_new_null())
+            || !TEST_ptr(fixture->chain = sk_X509_new_null())
+            || !TEST_true(sk_X509_push(fixture->certs, root))
+            || !TEST_true(sk_X509_push(fixture->chain, root))) {
+        tear_down(fixture);
+        fixture = NULL;
+    }
+    EXECUTE_TEST(execute_cmp_build_cert_chain_test, tear_down);
+    return result;
+}
+
 static int test_cmp_build_cert_chain_no_certs(void)
 {
     SETUP_TEST_FIXTURE(CMP_PROTECT_TEST_FIXTURE, set_up);
     fixture->expected = 0;
+    fixture->with_ss = 0;
     fixture->cert = endentity2;
     if (!TEST_ptr(fixture->certs = sk_X509_new_null())
             || !TEST_ptr(fixture->chain = sk_X509_new_null())
@@ -447,7 +482,7 @@ static int execute_X509_STORE_test(CMP_PROTECT_TEST_FIXTURE *fixture)
     res = 1;
  err:
     X509_STORE_free(store);
-    sk_X509_pop_free(sk, X509_free);
+    OSSL_STACK_OF_X509_free(sk);
     return res;
 
 }
@@ -487,30 +522,36 @@ static int test_X509_STORE_only_self_issued(void)
     return result;
 }
 
-
 void cleanup_tests(void)
 {
-    EVP_PKEY_free(loadedprivkey);
-    EVP_PKEY_free(loadedpubkey);
-    EVP_PKEY_free(loadedkey);
-    X509_free(cert);
+    EVP_PKEY_free(prot_RSA_key);
+#ifndef OPENSSL_NO_ECX
+    EVP_PKEY_free(prot_Ed_key);
+    OSSL_CMP_MSG_free(genm_protected_Ed);
+#endif
+    EVP_PKEY_free(server_key);
+    X509_free(server_cert);
     X509_free(endentity1);
     X509_free(endentity2);
     X509_free(root);
     X509_free(intermediate);
     OSSL_CMP_MSG_free(ir_protected);
     OSSL_CMP_MSG_free(ir_unprotected);
+    OSSL_PROVIDER_unload(default_null_provider);
+    OSSL_PROVIDER_unload(provider);
     OSSL_LIB_CTX_free(libctx);
 }
 
-#define USAGE "server.pem IR_protected.der IR_unprotected.der IP_PBM.der " \
+#define USAGE "prot_RSA.pem IR_protected.der prot_Ed.pem " \
+    "GENM_protected_Ed.der IR_unprotected.der IP_PBM.der " \
     "server.crt server.pem EndEntity1.crt EndEntity2.crt Root_CA.crt " \
     "Intermediate_CA.crt module_name [module_conf_file]\n"
 OPT_TEST_DECLARE_USAGE(USAGE)
 
 int setup_tests(void)
 {
-    char *server_f;
+    char *prot_RSA_f;
+    char *prot_Ed_f;
     char *server_key_f;
     char *server_cert_f;
     char *endentity1_f;
@@ -524,33 +565,40 @@ int setup_tests(void)
     }
 
     RAND_bytes(rand_data, OSSL_CMP_TRANSACTIONID_LENGTH);
-    if (!TEST_ptr(server_f = test_get_argument(0))
+    if (!TEST_ptr(prot_RSA_f = test_get_argument(0))
             || !TEST_ptr(ir_protected_f = test_get_argument(1))
-            || !TEST_ptr(ir_unprotected_f = test_get_argument(2))
-            || !TEST_ptr(ip_PBM_f = test_get_argument(3))
-            || !TEST_ptr(server_cert_f = test_get_argument(4))
-            || !TEST_ptr(server_key_f = test_get_argument(5))
-            || !TEST_ptr(endentity1_f = test_get_argument(6))
-            || !TEST_ptr(endentity2_f = test_get_argument(7))
-            || !TEST_ptr(root_f = test_get_argument(8))
-            || !TEST_ptr(intermediate_f = test_get_argument(9))) {
+            || !TEST_ptr(prot_Ed_f = test_get_argument(2))
+            || !TEST_ptr(genm_prot_Ed_f = test_get_argument(3))
+            || !TEST_ptr(ir_unprotected_f = test_get_argument(4))
+            || !TEST_ptr(ip_PBM_f = test_get_argument(5))
+            || !TEST_ptr(server_cert_f = test_get_argument(6))
+            || !TEST_ptr(server_key_f = test_get_argument(7))
+            || !TEST_ptr(endentity1_f = test_get_argument(8))
+            || !TEST_ptr(endentity2_f = test_get_argument(9))
+            || !TEST_ptr(root_f = test_get_argument(10))
+            || !TEST_ptr(intermediate_f = test_get_argument(11))) {
         TEST_error("usage: cmp_protect_test %s", USAGE);
         return 0;
     }
 
-    if (!test_arg_libctx(&libctx, &default_null_provider, &provider, 10, USAGE))
+    if (!test_arg_libctx(&libctx, &default_null_provider, &provider, 12, USAGE))
         return 0;
 
-    if (!TEST_ptr(loadedkey = load_pkey_pem(server_key_f, libctx))
-            || !TEST_ptr(cert = load_cert_pem(server_cert_f, libctx)))
+    if (!TEST_ptr(server_key = load_pkey_pem(server_key_f, libctx))
+            || !TEST_ptr(server_cert = load_cert_pem(server_cert_f, libctx)))
         return 0;
 
-    if (!TEST_ptr(loadedprivkey = load_pkey_pem(server_f, libctx)))
+    if (!TEST_ptr(prot_RSA_key = load_pkey_pem(prot_RSA_f, libctx)))
         return 0;
-    if (TEST_true(EVP_PKEY_up_ref(loadedprivkey)))
-        loadedpubkey = loadedprivkey;
-    if (!TEST_ptr(ir_protected = load_pkimsg(ir_protected_f))
-            || !TEST_ptr(ir_unprotected = load_pkimsg(ir_unprotected_f)))
+#ifndef OPENSSL_NO_ECX
+    if (!TEST_ptr(prot_Ed_key = load_pkey_pem(prot_Ed_f, libctx)))
+        return 0;
+#endif
+    if (!TEST_ptr(ir_protected = load_pkimsg(ir_protected_f, libctx))
+#ifndef OPENSSL_NO_ECX
+        || !TEST_ptr(genm_protected_Ed = load_pkimsg(genm_prot_Ed_f, libctx))
+#endif
+        || !TEST_ptr(ir_unprotected = load_pkimsg(ir_unprotected_f, libctx)))
         return 0;
     if (!TEST_ptr(endentity1 = load_cert_pem(endentity1_f, libctx))
             || !TEST_ptr(endentity2 = load_cert_pem(endentity2_f, libctx))
@@ -563,6 +611,9 @@ int setup_tests(void)
     /* Message protection tests */
     ADD_TEST(test_cmp_calc_protection_no_key_no_secret);
     ADD_TEST(test_cmp_calc_protection_pkey);
+#ifndef OPENSSL_NO_ECX
+    ADD_TEST(test_cmp_calc_protection_pkey_Ed);
+#endif
     ADD_TEST(test_cmp_calc_protection_pbmac);
 
     ADD_TEST(test_MSG_protect_with_msg_sig_alg_protection_plus_rsa_key);
@@ -576,6 +627,7 @@ int setup_tests(void)
 
 #ifndef OPENSSL_NO_EC
     ADD_TEST(test_cmp_build_cert_chain);
+    ADD_TEST(test_cmp_build_cert_chain_only_root);
     ADD_TEST(test_cmp_build_cert_chain_no_root);
     ADD_TEST(test_cmp_build_cert_chain_missing_intermediate);
     ADD_TEST(test_cmp_build_cert_chain_no_certs);

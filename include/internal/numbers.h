@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2015-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -61,6 +61,31 @@
 #  define UINT64_MAX __MAXUINT__(uint64_t)
 # endif
 
+/*
+ * 64-bit processor with LP64 ABI
+ */
+# ifdef SIXTY_FOUR_BIT_LONG
+#  ifndef UINT32_C
+#   define UINT32_C(c) (c)
+#  endif
+#  ifndef UINT64_C
+#   define UINT64_C(c) (c##UL)
+#  endif
+# endif
+
+/*
+ * 64-bit processor other than LP64 ABI
+ */
+# ifdef SIXTY_FOUR_BIT
+#  ifndef UINT32_C
+#   define UINT32_C(c) (c##UL)
+#  endif
+#  ifndef UINT64_C
+#   define UINT64_C(c) (c##ULL)
+#  endif
+# endif
+
+
 # ifndef INT128_MAX
 #  if defined(__SIZEOF_INT128__) && __SIZEOF_INT128__ == 16
 typedef __int128_t int128_t;
@@ -73,6 +98,12 @@ typedef __uint128_t uint128_t;
 
 # ifndef SIZE_MAX
 #  define SIZE_MAX __MAXUINT__(size_t)
+# endif
+
+# ifndef OSSL_INTMAX_MAX
+#  define OSSL_INTMAX_MIN __MININT__(ossl_intmax_t)
+#  define OSSL_INTMAX_MAX __MAXINT__(ossl_intmax_t)
+#  define OSSL_UINTMAX_MAX __MAXUINT__(ossl_uintmax_t)
 # endif
 
 #endif

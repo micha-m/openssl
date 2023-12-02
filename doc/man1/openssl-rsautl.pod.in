@@ -30,8 +30,6 @@ B<openssl> B<rsautl>
 {- $OpenSSL::safe::opt_engine_synopsis -}{- $OpenSSL::safe::opt_r_synopsis -}
 {- $OpenSSL::safe::opt_provider_synopsis -}
 
-=for openssl ifdef engine
-
 =head1 DESCRIPTION
 
 This command has been deprecated.
@@ -73,13 +71,14 @@ The input key, by default it should be an RSA private key.
 
 =item B<-keyform> B<DER>|B<PEM>|B<P12>|B<ENGINE>
 
-The key format; the default is B<PEM>.
-The only value with effect is B<ENGINE>; all others have become obsolete.
+The key format; unspecified by default.
 See L<openssl-format-options(1)> for details.
 
 =item B<-pubin>
 
-The input file is an RSA public key.
+By default a private key is read from the key input.
+With this option a public key is read instead.
+If the input contains no public key but a private key, its public part is used.
 
 =item B<-certin>
 
@@ -102,11 +101,16 @@ Encrypt the input data using an RSA public key.
 
 Decrypt the input data using an RSA private key.
 
-=item B<-pkcs>, B<-oaep>, B<-x931> B<-raw>
+=item B<-pkcs>, B<-oaep>, B<-x931>, B<-raw>
 
 The padding to use: PKCS#1 v1.5 (the default), PKCS#1 OAEP,
 ANSI X9.31, or no padding, respectively.
 For signatures, only B<-pkcs> and B<-raw> can be used.
+
+Note: because of protection against Bleichenbacher attacks, decryption
+using PKCS#1 v1.5 mode will not return errors in case padding check failed.
+Use B<-raw> and inspect the returned value manually to check if the
+padding is correct.
 
 =item B<-hexdump>
 
@@ -231,14 +235,11 @@ L<openssl-genrsa(1)>
 
 This command was deprecated in OpenSSL 3.0.
 
-All B<-keyform> values except B<ENGINE> have become obsolete in OpenSSL 3.0.0
-and have no effect.
-
 The B<-engine> option was deprecated in OpenSSL 3.0.
 
 =head1 COPYRIGHT
 
-Copyright 2000-2021 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2000-2023 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

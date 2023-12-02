@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2019-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -44,10 +44,8 @@ void *ossl_tdes_dupctx(void *ctx)
         return NULL;
 
     ret = OPENSSL_malloc(sizeof(*ret));
-    if (ret == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+    if (ret == NULL)
         return NULL;
-    }
     in->base.hw->copyctx(&ret->base, &in->base);
 
     return ret;
@@ -77,6 +75,12 @@ static int tdes_init(void *vctx, const unsigned char *key, size_t keylen,
     if (iv != NULL) {
         if (!ossl_cipher_generic_initiv(ctx, iv, ivlen))
             return 0;
+    } else if (ctx->iv_set
+               && (ctx->mode == EVP_CIPH_CBC_MODE
+                   || ctx->mode == EVP_CIPH_CFB_MODE
+                   || ctx->mode == EVP_CIPH_OFB_MODE)) {
+        /* reset IV to keep compatibility with 1.1.1 */
+        memcpy(ctx->iv, ctx->oiv, ctx->ivlen);
     }
 
     if (key != NULL) {
@@ -86,6 +90,7 @@ static int tdes_init(void *vctx, const unsigned char *key, size_t keylen,
         }
         if (!ctx->hw->init(ctx, key, ctx->keylen))
             return 0;
+        ctx->key_set = 1;
     }
     return ossl_cipher_generic_set_ctx_params(ctx, params);
 }
@@ -114,16 +119,15 @@ static int tdes_generatekey(PROV_CIPHER_CTX *ctx, void *ptr)
     DES_cblock *deskey = ptr;
     size_t kl = ctx->keylen;
 
-    if (kl == 0 || RAND_priv_bytes_ex(ctx->libctx, ptr, kl) <= 0)
+    if (kl == 0 || RAND_priv_bytes_ex(ctx->libctx, ptr, kl, 0) <= 0)
         return 0;
     DES_set_odd_parity(deskey);
-    if (kl >= 16)
+    if (kl >= 16) {
         DES_set_odd_parity(deskey + 1);
-    if (kl >= 24) {
-        DES_set_odd_parity(deskey + 2);
-        return 1;
+        if (kl >= 24)
+            DES_set_odd_parity(deskey + 2);
     }
-    return 0;
+    return 1;
 }
 
 int ossl_tdes_get_ctx_params(void *vctx, OSSL_PARAM params[])

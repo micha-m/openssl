@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2002-2023 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -19,6 +19,8 @@
 
 # include <openssl/opensslconf.h>
 # include <openssl/types.h>
+
+# include <string.h>
 
 # ifdef  __cplusplus
 extern "C" {
@@ -84,6 +86,11 @@ typedef enum {
     POINT_CONVERSION_HYBRID = 6
 } point_conversion_form_t;
 
+const char *OSSL_EC_curve_nid2name(int nid);
+
+# ifndef OPENSSL_NO_STDIO
+#  include <stdio.h>
+# endif
 # ifndef OPENSSL_NO_EC
 #  include <openssl/asn1.h>
 #  include <openssl/symhacks.h>
@@ -452,6 +459,22 @@ EC_GROUP *EC_GROUP_new_curve_GF2m(const BIGNUM *p, const BIGNUM *a,
  */
 EC_GROUP *EC_GROUP_new_from_params(const OSSL_PARAM params[],
                                    OSSL_LIB_CTX *libctx, const char *propq);
+
+/**
+ * Creates an OSSL_PARAM array with the parameters describing the given
+ * EC_GROUP.
+ * The resulting parameters may contain an explicit or a named curve depending
+ * on the EC_GROUP.
+ *  \param  group  pointer to the EC_GROUP object
+ *  \param  libctx The associated library context or NULL for the default
+ *                 context
+ *  \param  propq  A property query string
+ *  \param  bnctx  BN_CTX object (optional)
+ *  \return newly created OSSL_PARAM array with the parameters
+ *          describing the given EC_GROUP or NULL if an error occurred
+ */
+OSSL_PARAM *EC_GROUP_to_params(const EC_GROUP *group, OSSL_LIB_CTX *libctx,
+                               const char *propq, BN_CTX *bnctx);
 
 /**
  * Creates a EC_GROUP object with a curve specified by a NID
@@ -913,10 +936,10 @@ int i2d_ECPKParameters(const EC_GROUP *, unsigned char **out);
 #  define i2d_ECPKParameters_bio(bp,x) \
     ASN1_i2d_bio_of(EC_GROUP, i2d_ECPKParameters, bp, x)
 #  define d2i_ECPKParameters_fp(fp,x) \
-    (EC_GROUP *)ASN1_d2i_fp(NULL, (char *(*)())d2i_ECPKParameters, (fp), \
-                            (unsigned char **)(x))
+    (EC_GROUP *)ASN1_d2i_fp(NULL, (d2i_of_void *)d2i_ECPKParameters, (fp), \
+                            (void **)(x))
 #  define i2d_ECPKParameters_fp(fp,x) \
-    ASN1_i2d_fp(i2d_ECPKParameters,(fp), (unsigned char *)(x))
+    ASN1_i2d_fp((i2d_of_void *)i2d_ECPKParameters, (fp), (void *)(x))
 
 #  ifndef OPENSSL_NO_DEPRECATED_3_0
 OSSL_DEPRECATEDIN_3_0 int ECPKParameters_print(BIO *bp, const EC_GROUP *x,
@@ -1072,7 +1095,7 @@ OSSL_DEPRECATEDIN_3_0 void EC_KEY_set_conv_form(EC_KEY *eckey,
                                                 point_conversion_form_t cform);
 #  endif /*OPENSSL_NO_DEPRECATED_3_0 */
 
-# define EC_KEY_get_ex_new_index(l, p, newf, dupf, freef) \
+#  define EC_KEY_get_ex_new_index(l, p, newf, dupf, freef) \
     CRYPTO_get_ex_new_index(CRYPTO_EX_INDEX_EC_KEY, l, p, newf, dupf, freef)
 
 #  ifndef OPENSSL_NO_DEPRECATED_3_0
@@ -1104,7 +1127,7 @@ OSSL_DEPRECATEDIN_3_0 int EC_KEY_check_key(const EC_KEY *key);
 
 /** Indicates if an EC_KEY can be used for signing.
  *  \param  eckey  the EC_KEY object
- *  \return 1 if can can sign and 0 otherwise.
+ *  \return 1 if can sign and 0 otherwise.
  */
 OSSL_DEPRECATEDIN_3_0 int EC_KEY_can_sign(const EC_KEY *eckey);
 
@@ -1280,7 +1303,7 @@ OSSL_DEPRECATEDIN_3_0 int EC_KEY_set_method(EC_KEY *key, const EC_KEY_METHOD *me
 OSSL_DEPRECATEDIN_3_0 EC_KEY *EC_KEY_new_method(ENGINE *engine);
 
 /** The old name for ecdh_KDF_X9_63
- *  The ECDH KDF specification has been mistakingly attributed to ANSI X9.62,
+ *  The ECDH KDF specification has been mistakenly attributed to ANSI X9.62,
  *  it is actually specified in ANSI X9.63.
  *  This identifier is retained for backwards compatibility
  */
@@ -1345,8 +1368,8 @@ const BIGNUM *ECDSA_SIG_get0_s(const ECDSA_SIG *sig);
 
 /** Setter for r and s fields of ECDSA_SIG
  *  \param  sig  pointer to ECDSA_SIG structure
- *  \param  r    pointer to BIGNUM for r (may be NULL)
- *  \param  s    pointer to BIGNUM for s (may be NULL)
+ *  \param  r    pointer to BIGNUM for r
+ *  \param  s    pointer to BIGNUM for s
  */
 int ECDSA_SIG_set0(ECDSA_SIG *sig, BIGNUM *r, BIGNUM *s);
 
@@ -1544,6 +1567,9 @@ OSSL_DEPRECATEDIN_3_0 void EC_KEY_METHOD_get_verify
                                            EC_KEY *eckey));
 #  endif /* OPENSSL_NO_DEPRECATED_3_0 */
 
+#  define EVP_EC_gen(curve) \
+    EVP_PKEY_Q_keygen(NULL, NULL, "EC", (char *)(strstr(curve, "")))
+    /* strstr is used to enable type checking for the variadic string arg */
 #  define ECParameters_dup(x) ASN1_dup_of(EC_KEY, i2d_ECParameters, \
                                           d2i_ECParameters, x)
 

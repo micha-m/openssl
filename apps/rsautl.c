@@ -1,5 +1,5 @@
 /*
- * Copyright 2000-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2000-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -26,7 +26,7 @@
 #define KEY_CERT        3
 
 typedef enum OPTION_choice {
-    OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
+    OPT_COMMON,
     OPT_ENGINE, OPT_IN, OPT_OUT, OPT_ASN1PARSE, OPT_HEXDUMP,
     OPT_RSA_RAW, OPT_OAEP, OPT_PKCS, OPT_X931,
     OPT_SIGN, OPT_VERIFY, OPT_REV, OPT_ENCRYPT, OPT_DECRYPT,
@@ -47,9 +47,9 @@ const OPTIONS rsautl_options[] = {
 
     OPT_SECTION("Input"),
     {"in", OPT_IN, '<', "Input file"},
-    {"inkey", OPT_INKEY, 's', "Input key"},
+    {"inkey", OPT_INKEY, 's', "Input key, by default an RSA private key"},
     {"keyform", OPT_KEYFORM, 'E', "Private key format (ENGINE, other values ignored)"},
-    {"pubin", OPT_PUBIN, '-', "Input is an RSA public"},
+    {"pubin", OPT_PUBIN, '-', "Input key is an RSA public pkey"},
     {"certin", OPT_CERTIN, '-', "Input is a cert carrying an RSA public key"},
     {"rev", OPT_REV, '-', "Reverse the order of the input buffer"},
     {"passin", OPT_PASSIN, 's', "Input file pass phrase source"},
@@ -81,7 +81,7 @@ int rsautl_main(int argc, char **argv)
     char rsa_mode = RSA_VERIFY, key_type = KEY_PRIVKEY;
     unsigned char *rsa_in = NULL, *rsa_out = NULL, pad = RSA_PKCS1_PADDING;
     size_t rsa_inlen, rsa_outlen = 0;
-    int keyformat = FORMAT_PEM, keysize, ret = 1, rv;
+    int keyformat = FORMAT_UNDEF, keysize, ret = 1, rv;
     int hexdump = 0, asn1parse = 0, need_priv = 0, rev = 0;
     OPTION_CHOICE o;
 
@@ -169,8 +169,7 @@ int rsautl_main(int argc, char **argv)
     }
 
     /* No extra arguments. */
-    argc = opt_num_rest();
-    if (argc != 0)
+    if (!opt_check_rest_arg(NULL))
         goto opthelp;
 
     if (!app_RAND_load())
@@ -196,7 +195,7 @@ int rsautl_main(int argc, char **argv)
         break;
 
     case KEY_CERT:
-        x = load_cert(keyfile, "Certificate");
+        x = load_cert(keyfile, FORMAT_UNDEF, "Certificate");
         if (x) {
             pkey = X509_get_pubkey(x);
             X509_free(x);
@@ -214,7 +213,7 @@ int rsautl_main(int argc, char **argv)
     if (out == NULL)
         goto end;
 
-    keysize = EVP_PKEY_size(pkey);
+    keysize = EVP_PKEY_get_size(pkey);
 
     rsa_in = app_malloc(keysize * 2, "hold rsa key");
     rsa_out = app_malloc(keysize, "output rsa key");
@@ -243,25 +242,25 @@ int rsautl_main(int argc, char **argv)
 
     switch (rsa_mode) {
     case RSA_VERIFY:
-        rv = EVP_PKEY_verify_recover_init(ctx)
-            && EVP_PKEY_CTX_set_rsa_padding(ctx, pad)
+        rv = EVP_PKEY_verify_recover_init(ctx) > 0
+            && EVP_PKEY_CTX_set_rsa_padding(ctx, pad) > 0
             && EVP_PKEY_verify_recover(ctx, rsa_out, &rsa_outlen,
-                                       rsa_in, rsa_inlen);
+                                       rsa_in, rsa_inlen) > 0;
         break;
     case RSA_SIGN:
-        rv = EVP_PKEY_sign_init(ctx)
-            && EVP_PKEY_CTX_set_rsa_padding(ctx, pad)
-            && EVP_PKEY_sign(ctx, rsa_out, &rsa_outlen, rsa_in, rsa_inlen);
+        rv = EVP_PKEY_sign_init(ctx) > 0
+            && EVP_PKEY_CTX_set_rsa_padding(ctx, pad) > 0
+            && EVP_PKEY_sign(ctx, rsa_out, &rsa_outlen, rsa_in, rsa_inlen) > 0;
         break;
     case RSA_ENCRYPT:
-        rv = EVP_PKEY_encrypt_init(ctx)
-            && EVP_PKEY_CTX_set_rsa_padding(ctx, pad)
-            && EVP_PKEY_encrypt(ctx, rsa_out, &rsa_outlen, rsa_in, rsa_inlen);
+        rv = EVP_PKEY_encrypt_init(ctx) > 0
+            && EVP_PKEY_CTX_set_rsa_padding(ctx, pad) > 0
+            && EVP_PKEY_encrypt(ctx, rsa_out, &rsa_outlen, rsa_in, rsa_inlen) > 0;
         break;
     case RSA_DECRYPT:
-        rv = EVP_PKEY_decrypt_init(ctx)
-            && EVP_PKEY_CTX_set_rsa_padding(ctx, pad)
-            && EVP_PKEY_decrypt(ctx, rsa_out, &rsa_outlen, rsa_in, rsa_inlen);
+        rv = EVP_PKEY_decrypt_init(ctx) > 0
+            && EVP_PKEY_CTX_set_rsa_padding(ctx, pad) > 0
+            && EVP_PKEY_decrypt(ctx, rsa_out, &rsa_outlen, rsa_in, rsa_inlen) > 0;
         break;
     }
 

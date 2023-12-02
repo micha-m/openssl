@@ -14,7 +14,7 @@ To request new features or report bugs, please open an issue on GitHub
 To submit a patch, please open a pull request on GitHub.  If you are thinking
 of making a large contribution, open an issue for it before starting work,
 to get comments from the community.  Someone may be already working on
-the same thing or there may be reasons why that feature isn't implemented.
+the same thing, or there may be reasons why that feature isn't implemented.
 
 To make it easier to review and accept your pull request, please follow these
 guidelines:
@@ -22,9 +22,20 @@ guidelines:
  1. Anything other than a trivial contribution requires a [Contributor
     License Agreement] (CLA), giving us permission to use your code.
     If your contribution is too small to require a CLA (e.g. fixing a spelling
-    mistake), place the text "`CLA: trivial`" on a line by itself separated by
-    an empty line from the rest of the commit message. It is not sufficient to
-    only place the text in the GitHub pull request description.
+    mistake), then place the text "`CLA: trivial`" on a line by itself below
+    the rest of your commit message separated by an empty line, like this:
+
+    ```
+        One-line summary of trivial change
+
+        Optional main body of commit message. It might contain a sentence
+        or two explaining the trivial change.
+
+        CLA: trivial
+    ```
+
+    It is not sufficient to only place the text "`CLA: trivial`" in the GitHub
+    pull request description.
 
     [Contributor License Agreement]: <https://www.openssl.org/policies/cla.html>
 
@@ -32,8 +43,8 @@ guidelines:
 
     ```
         git commit --amend
-        [add the line, save and quit the editor]
-        git push -f
+        # add the line, save and quit the editor
+        git push -f [<repository> [<branch>]]
     ```
 
  2. All source files should start with the following text (with
@@ -54,13 +65,13 @@ guidelines:
     (usually by rebasing) before it will be acceptable.
 
  4. Patches should follow our [coding style] and compile without warnings.
-    Where `gcc` or `clang` is available you should use the
+    Where `gcc` or `clang` is available, you should use the
     `--strict-warnings` `Configure` option.  OpenSSL compiles on many varied
     platforms: try to ensure you only use portable features.  Clean builds via
     GitHub Actions and AppVeyor are required, and they are started automatically
     whenever a PR is created or updated.
 
-    [coding style]: https://www.openssl.org/policies/codingstyle.html
+    [coding style]: https://www.openssl.org/policies/technical/coding-style.html
 
  5. When at all possible, patches should include tests. These can
     either be added to an existing test, or completely new.  Please see
@@ -82,13 +93,5 @@ guidelines:
     with a specific release without having to sift through the higher
     noise ratio in git-log.
 
- 8. For larger or more important user visible changes, as well as
-    security fixes, please add a line in [NEWS.md](NEWS.md).
-    On exception, it might be worth adding a multi-line entry (such as
-    the entry that announces all the types that became opaque with
-    OpenSSL 1.1.0).
-    This file helps users get a very quick summary of what comes with a
-    specific release, to see if an upgrade is worth the effort.
-
- 9. Guidelines how to integrate error output of new crypto library modules
+ 8. Guidelines how to integrate error output of new crypto library modules
     can be found in [crypto/err/README.md](crypto/err/README.md).

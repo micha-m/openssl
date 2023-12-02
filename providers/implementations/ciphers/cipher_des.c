@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2019-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -20,7 +20,7 @@
 #include "prov/implementations.h"
 #include "prov/providercommon.h"
 
-#define DES_FLAGS 0
+#define DES_FLAGS PROV_CIPHER_FLAG_RAND_KEY
 
 static OSSL_FUNC_cipher_freectx_fn des_freectx;
 static OSSL_FUNC_cipher_encrypt_init_fn des_einit;
@@ -53,10 +53,8 @@ static void *des_dupctx(void *ctx)
         return NULL;
 
     ret = OPENSSL_malloc(sizeof(*ret));
-    if (ret == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+    if (ret == NULL)
         return NULL;
-    }
     in->base.hw->copyctx(&ret->base, &in->base);
 
     return ret;
@@ -86,6 +84,9 @@ static int des_init(void *vctx, const unsigned char *key, size_t keylen,
     if (iv != NULL) {
         if (!ossl_cipher_generic_initiv(ctx, iv, ivlen))
             return 0;
+    } else if (ctx->iv_set) {
+        /* reset IV to keep compatibility with 1.1.1 */
+        memcpy(ctx->iv, ctx->oiv, ctx->ivlen);
     }
 
     if (key != NULL) {
@@ -95,6 +96,7 @@ static int des_init(void *vctx, const unsigned char *key, size_t keylen,
         }
         if (!ctx->hw->init(ctx, key, keylen))
             return 0;
+        ctx->key_set = 1;
     }
     return ossl_cipher_generic_set_ctx_params(ctx, params);
 }
@@ -119,7 +121,7 @@ static int des_generatekey(PROV_CIPHER_CTX *ctx, void *ptr)
     DES_cblock *deskey = ptr;
     size_t kl = ctx->keylen;
 
-    if (kl == 0 || RAND_priv_bytes_ex(ctx->libctx, ptr, kl) <= 0)
+    if (kl == 0 || RAND_priv_bytes_ex(ctx->libctx, ptr, kl, 0) <= 0)
         return 0;
     DES_set_odd_parity(deskey);
     return 1;
@@ -182,7 +184,7 @@ const OSSL_DISPATCH ossl_##des_##lcmode##_functions[] = {                      \
      (void (*)(void))ossl_cipher_generic_set_ctx_params },                     \
     { OSSL_FUNC_CIPHER_SETTABLE_CTX_PARAMS,                                    \
      (void (*)(void))ossl_cipher_generic_settable_ctx_params },                \
-    { 0, NULL }                                                                \
+    OSSL_DISPATCH_END                                                          \
 }
 
 /* ossl_des_ecb_functions */

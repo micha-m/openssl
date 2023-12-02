@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2018-2022 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -32,7 +32,7 @@
 #   include <sys/ktls.h>
 #   include <netinet/in.h>
 #   include <netinet/tcp.h>
-#   include "openssl/ssl3.h"
+#   include <openssl/ssl3.h>
 
 #   ifndef TCP_RXTLS_ENABLE
 #    define OPENSSL_NO_KTLS_RX
@@ -40,12 +40,11 @@
 #   define OPENSSL_KTLS_AES_GCM_128
 #   define OPENSSL_KTLS_AES_GCM_256
 #   define OPENSSL_KTLS_TLS13
-
-/*
- * Only used by the tests in sslapitest.c.
- */
-#   define TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE             8
-#   define TLS_CIPHER_AES_GCM_256_REC_SEQ_SIZE             8
+#   ifdef TLS_CHACHA20_IV_LEN
+#    ifndef OPENSSL_NO_CHACHA
+#     define OPENSSL_KTLS_CHACHA20_POLY1305
+#    endif
+#   endif
 
 typedef struct tls_enable ktls_crypto_info_t;
 
@@ -215,6 +214,13 @@ static ossl_inline ossl_ssize_t ktls_sendfile(int s, int fd, off_t off,
 #     warning "Skipping Compilation of KTLS receive data path"
 #    endif
 #   endif
+#   if LINUX_VERSION_CODE < KERNEL_VERSION(5, 19, 0)
+#    define OPENSSL_NO_KTLS_ZC_TX
+#    ifndef PEDANTIC
+#     warning "KTLS requires Kernel Headers >= 5.19.0 for zerocopy sendfile"
+#     warning "Skipping Compilation of KTLS zerocopy sendfile"
+#    endif
+#   endif
 #   define OPENSSL_KTLS_AES_GCM_128
 #   if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 1, 0)
 #    define OPENSSL_KTLS_AES_GCM_256
@@ -232,9 +238,9 @@ static ossl_inline ossl_ssize_t ktls_sendfile(int s, int fd, off_t off,
 #   include <sys/sendfile.h>
 #   include <netinet/tcp.h>
 #   include <linux/socket.h>
-#   include "openssl/ssl3.h"
-#   include "openssl/tls1.h"
-#   include "openssl/evp.h"
+#   include <openssl/ssl3.h>
+#   include <openssl/tls1.h>
+#   include <openssl/evp.h>
 
 #   ifndef SOL_TLS
 #    define SOL_TLS 282
@@ -292,6 +298,18 @@ static ossl_inline int ktls_start(int fd, ktls_crypto_info_t *crypto_info,
 {
     return setsockopt(fd, SOL_TLS, is_tx ? TLS_TX : TLS_RX,
                       crypto_info, crypto_info->tls_crypto_info_len) ? 0 : 1;
+}
+
+static ossl_inline int ktls_enable_tx_zerocopy_sendfile(int fd)
+{
+#ifndef OPENSSL_NO_KTLS_ZC_TX
+    int enable = 1;
+
+    return setsockopt(fd, SOL_TLS, TLS_TX_ZEROCOPY_RO,
+                      &enable, sizeof(enable)) ? 0 : 1;
+#else
+    return 0;
+#endif
 }
 
 /*

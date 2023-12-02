@@ -19,8 +19,13 @@ B<openssl fipsinstall>
 [B<-macopt> I<nm>:I<v>]
 [B<-noout>]
 [B<-quiet>]
+[B<-pedantic>]
 [B<-no_conditional_errors>]
 [B<-no_security_checks>]
+[B<-ems_check>]
+[B<-no_drbg_truncated_digests>]
+[B<-self_test_onload>]
+[B<-self_test_oninstall>]
 [B<-corrupt_desc> I<selftest_description>]
 [B<-corrupt_type> I<selftest_type>]
 [B<-config> I<parent_config>]
@@ -30,7 +35,7 @@ B<openssl fipsinstall>
 This command is used to generate a FIPS module configuration file.
 This configuration file can be used each time a FIPS module is loaded
 in order to pass data to the FIPS module self tests. The FIPS module always
-verifies its MAC, but only needs to run the KAT's once,
+verifies its MAC, but optionally only needs to run the KAT's once,
 at installation.
 
 The generated configuration file consists of:
@@ -154,6 +159,14 @@ The default digest is SHA-256.
 
 Disable logging of the self tests.
 
+=item B<-pedantic>
+
+Configure the module so that it is strictly FIPS compliant rather
+than being backwards compatible.  This enables conditional errors,
+security checks etc.  Note that any previous configuration options will
+be overwritten and any subsequent configuration options that violate
+FIPS compliance will result in an error.
+
 =item B<-no_conditional_errors>
 
 Configure the module to not enter an error state if a conditional self test
@@ -162,6 +175,38 @@ fails as described above.
 =item B<-no_security_checks>
 
 Configure the module to not perform run-time security checks as described above.
+
+Enabling the configuration option "no-fips-securitychecks" provides another way to
+turn off the check at compile time.
+
+=item B<-ems_check>
+
+Configure the module to enable a run-time Extended Master Secret (EMS) check
+when using the TLS1_PRF KDF algorithm. This check is disabled by default.
+See RFC 7627 for information related to EMS.
+
+=item B<-no_drbg_truncated_digests>
+
+Configure the module to not allow truncated digests to be used with Hash and
+HMAC DRBGs.  See FIPS 140-3 IG D.R for details.
+
+=item B<-self_test_onload>
+
+Do not write the two fields related to the "test status indicator" and
+"MAC status indicator" to the output configuration file. Without these fields
+the self tests KATS will run each time the module is loaded. This option could be
+used for cross compiling, since the self tests need to run at least once on each
+target machine. Once the self tests have run on the target machine the user
+could possibly then add the 2 fields into the configuration using some other
+mechanism.
+
+This is the default.
+
+=item B<-self_test_oninstall>
+
+The converse of B<-self_test_oninstall>.  The two fields related to the
+"test status indicator" and "MAC status indicator" are written to the
+output configuration file.
 
 =item B<-quiet>
 
@@ -185,6 +230,23 @@ See L<config(5)> for further information on how to set up a provider section.
 All other options are ignored if '-config' is used.
 
 =back
+
+=head1 NOTES
+
+Self tests results are logged by default if the options B<-quiet> and B<-noout>
+are not specified, or if either of the options B<-corrupt_desc> or
+B<-corrupt_type> are used.
+If the base configuration file is set up to autoload the fips module, then the
+fips module will be loaded and self tested BEFORE the fipsinstall application
+has a chance to set up its own self test callback. As a result of this the self
+test output and the options B<-corrupt_desc> and B<-corrupt_type> will be ignored.
+For normal usage the base configuration file should use the default provider
+when generating the fips configuration file.
+
+The B<-self_test_oninstall> option was added and the
+B<-self_test_onload> option was made the default in OpenSSL 3.1.
+
+The command and all remaining options were added in OpenSSL 3.0.
 
 =head1 EXAMPLES
 
@@ -218,7 +280,7 @@ L<EVP_MAC(3)>
 
 =head1 COPYRIGHT
 
-Copyright 2019-2021 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2019-2023 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

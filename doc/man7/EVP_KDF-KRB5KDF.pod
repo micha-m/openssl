@@ -94,14 +94,13 @@ RFC 3961
 
 L<EVP_KDF(3)>,
 L<EVP_KDF_CTX_free(3)>,
-L<EVP_KDF_ctrl(3)>,
 L<EVP_KDF_CTX_get_kdf_size(3)>,
 L<EVP_KDF_derive(3)>,
 L<EVP_KDF(3)/PARAMETERS>
 
 =head1 HISTORY
 
-This functionality was added to OpenSSL 3.0.
+This functionality was added in OpenSSL 3.0.
 
 =head1 COPYRIGHT
 

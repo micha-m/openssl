@@ -1,5 +1,5 @@
 /*
- * Copyright 2015-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2015-2023 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2013-2014 Timo Teräs <timo.teras@gmail.com>
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -168,6 +168,12 @@ static int add_entry(enum Type type, unsigned int hash, const char *filename,
         *ep = nilhentry;
         ep->old_id = ~0;
         ep->filename = OPENSSL_strdup(filename);
+        if (ep->filename == NULL) {
+            OPENSSL_free(ep);
+            ep = NULL;
+            BIO_printf(bio_err, "out of memory\n");
+            return 1;
+        }
         if (bp->last_entry)
             bp->last_entry->next = ep;
         if (bp->first_entry == NULL)
@@ -206,11 +212,11 @@ static int handle_symlink(const char *filename, const char *fullpath)
     }
     if (filename[i++] != '.')
         return -1;
-    for (type = OSSL_NELEM(suffixes) - 1; type > 0; type--) {
-        const char *suffix = suffixes[type];
-        if (strncasecmp(suffix, &filename[i], strlen(suffix)) == 0)
+    for (type = OSSL_NELEM(suffixes) - 1; type > 0; type--)
+        if (OPENSSL_strncasecmp(&filename[i],
+                                suffixes[type], strlen(suffixes[type])) == 0)
             break;
-    }
+
     i += strlen(suffixes[type]);
 
     id = strtoul(&filename[i], &endptr, 10);
@@ -243,7 +249,7 @@ static int do_file(const char *filename, const char *fullpath, enum Hash h)
     if ((ext = strrchr(filename, '.')) == NULL)
         goto end;
     for (i = 0; i < OSSL_NELEM(extensions); i++) {
-        if (strcasecmp(extensions[i], ext + 1) == 0)
+        if (OPENSSL_strcasecmp(extensions[i], ext + 1) == 0)
             break;
     }
     if (i >= OSSL_NELEM(extensions))
@@ -334,6 +340,11 @@ static int ends_with_dirsep(const char *path)
     return *path == '/';
 }
 
+static int sk_strcmp(const char * const *a, const char * const *b)
+{
+    return strcmp(*a, *b);
+}
+
 /*
  * Process a directory; return number of errors found.
  */
@@ -344,9 +355,9 @@ static int do_dir(const char *dirname, enum Hash h)
     OPENSSL_DIR_CTX *d = NULL;
     struct stat st;
     unsigned char idmask[MAX_COLLISIONS / 8];
-    int n, numfiles, nextid, buflen, errs = 0;
+    int n, numfiles, nextid, dirlen, buflen, errs = 0;
     size_t i;
-    const char *pathsep;
+    const char *pathsep = "";
     const char *filename;
     char *buf, *copy = NULL;
     STACK_OF(OPENSSL_STRING) *files = NULL;
@@ -355,15 +366,18 @@ static int do_dir(const char *dirname, enum Hash h)
         BIO_printf(bio_err, "Skipping %s, can't write\n", dirname);
         return 1;
     }
-    buflen = strlen(dirname);
-    pathsep = (buflen && !ends_with_dirsep(dirname)) ? "/": "";
-    buflen += NAME_MAX + 1 + 1;
+    dirlen = strlen(dirname);
+    if (dirlen != 0 && !ends_with_dirsep(dirname)) {
+        pathsep = "/";
+        dirlen++;
+    }
+    buflen = dirlen + NAME_MAX + 1;
     buf = app_malloc(buflen, "filename buffer");
 
     if (verbose)
         BIO_printf(bio_out, "Doing %s\n", dirname);
 
-    if ((files = sk_OPENSSL_STRING_new_null()) == NULL) {
+    if ((files = sk_OPENSSL_STRING_new(sk_strcmp)) == NULL) {
         BIO_printf(bio_err, "Skipping %s, out of memory\n", dirname);
         errs = 1;
         goto err;
@@ -416,12 +430,12 @@ static int do_dir(const char *dirname, enum Hash h)
                     while (bit_isset(idmask, nextid))
                         nextid++;
 
-                    BIO_snprintf(buf, buflen, "%s%s%n%08x.%s%d",
-                                 dirname, pathsep, &n, bp->hash,
+                    BIO_snprintf(buf, buflen, "%s%s%08x.%s%d",
+                                 dirname, pathsep, bp->hash,
                                  suffixes[bp->type], nextid);
                     if (verbose)
                         BIO_printf(bio_out, "link %s -> %s\n",
-                                   ep->filename, &buf[n]);
+                                   ep->filename, &buf[dirlen]);
                     if (unlink(buf) < 0 && errno != ENOENT) {
                         BIO_printf(bio_err,
                                    "%s: Can't unlink %s, %s\n",
@@ -438,12 +452,12 @@ static int do_dir(const char *dirname, enum Hash h)
                     bit_set(idmask, nextid);
                 } else if (remove_links) {
                     /* Link to be deleted */
-                    BIO_snprintf(buf, buflen, "%s%s%n%08x.%s%d",
-                                 dirname, pathsep, &n, bp->hash,
+                    BIO_snprintf(buf, buflen, "%s%s%08x.%s%d",
+                                 dirname, pathsep, bp->hash,
                                  suffixes[bp->type], ep->old_id);
                     if (verbose)
                         BIO_printf(bio_out, "unlink %s\n",
-                                   &buf[n]);
+                                   &buf[dirlen]);
                     if (unlink(buf) < 0 && errno != ENOENT) {
                         BIO_printf(bio_err,
                                    "%s: Can't unlink %s, %s\n",
@@ -466,7 +480,7 @@ static int do_dir(const char *dirname, enum Hash h)
 }
 
 typedef enum OPTION_choice {
-    OPT_ERR = -1, OPT_EOF = 0, OPT_HELP,
+    OPT_COMMON,
     OPT_COMPAT, OPT_OLD, OPT_N, OPT_VERBOSE,
     OPT_PROV_ENUM
 } OPTION_CHOICE;
@@ -534,7 +548,7 @@ int rehash_main(int argc, char **argv)
     argv = opt_rest();
 
     evpmd = EVP_sha1();
-    evpmdsize = EVP_MD_size(evpmd);
+    evpmdsize = EVP_MD_get_size(evpmd);
 
     if (*argv != NULL) {
         while (*argv != NULL)

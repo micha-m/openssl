@@ -1,5 +1,5 @@
 /*
- * Copyright 2006-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2022 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -121,12 +121,12 @@ static int dh_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey)
 
     str = ASN1_STRING_new();
     if (str == NULL) {
-        ERR_raise(ERR_LIB_DH, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DH, ERR_R_ASN1_LIB);
         goto err;
     }
     str->length = i2d_dhp(pkey, dh, &str->data);
     if (str->length <= 0) {
-        ERR_raise(ERR_LIB_DH, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DH, ERR_R_ASN1_LIB);
         goto err;
     }
     ptype = V_ASN1_SEQUENCE;
@@ -140,7 +140,7 @@ static int dh_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey)
     ASN1_INTEGER_free(pub_key);
 
     if (penclen <= 0) {
-        ERR_raise(ERR_LIB_DH, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DH, ERR_R_ASN1_LIB);
         goto err;
     }
 
@@ -184,13 +184,13 @@ static int dh_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey)
     params = ASN1_STRING_new();
 
     if (params == NULL) {
-        ERR_raise(ERR_LIB_DH, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DH, ERR_R_ASN1_LIB);
         goto err;
     }
 
     params->length = i2d_dhp(pkey, pkey->pkey.dh, &params->data);
     if (params->length <= 0) {
-        ERR_raise(ERR_LIB_DH, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DH, ERR_R_ASN1_LIB);
         goto err;
     }
     params->type = V_ASN1_SEQUENCE;
@@ -206,18 +206,21 @@ static int dh_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey)
     dplen = i2d_ASN1_INTEGER(prkey, &dp);
 
     ASN1_STRING_clear_free(prkey);
-    prkey = NULL;
+
+    if (dplen <= 0) {
+        ERR_raise(ERR_LIB_DH, DH_R_BN_ERROR);
+        goto err;
+    }
 
     if (!PKCS8_pkey_set0(p8, OBJ_nid2obj(pkey->ameth->pkey_id), 0,
-                         V_ASN1_SEQUENCE, params, dp, dplen))
+                         V_ASN1_SEQUENCE, params, dp, dplen)) {
+        OPENSSL_clear_free(dp, dplen);
         goto err;
-
+    }
     return 1;
 
  err:
-    OPENSSL_free(dp);
     ASN1_STRING_free(params);
-    ASN1_STRING_clear_free(prkey);
     return 0;
 }
 
@@ -311,7 +314,7 @@ static int dh_security_bits(const EVP_PKEY *pkey)
 
 static int dh_cmp_parameters(const EVP_PKEY *a, const EVP_PKEY *b)
 {
-    return ossl_ffc_params_cmp(&a->pkey.dh->params, &a->pkey.dh->params,
+    return ossl_ffc_params_cmp(&a->pkey.dh->params, &b->pkey.dh->params,
                                a->ameth != &ossl_dhx_asn1_meth);
 }
 
@@ -393,14 +396,21 @@ int DHparams_print(BIO *bp, const DH *x)
 
 static int dh_pkey_ctrl(EVP_PKEY *pkey, int op, long arg1, void *arg2)
 {
+    DH *dh;
     switch (op) {
     case ASN1_PKEY_CTRL_SET1_TLS_ENCPT:
         /* We should only be here if we have a legacy key */
         if (!ossl_assert(evp_pkey_is_legacy(pkey)))
             return 0;
-        return ossl_dh_buf2key(evp_pkey_get0_DH_int(pkey), arg2, arg1);
+        dh = (DH *) evp_pkey_get0_DH_int(pkey);
+        if (dh == NULL)
+            return 0;
+        return ossl_dh_buf2key(dh, arg2, arg1);
     case ASN1_PKEY_CTRL_GET1_TLS_ENCPT:
-        return ossl_dh_key2buf(EVP_PKEY_get0_DH(pkey), arg2, 0, 1);
+        dh = (DH *) EVP_PKEY_get0_DH(pkey);
+        if (dh == NULL)
+            return 0;
+        return ossl_dh_key2buf(dh, arg2, 0, 1);
     default:
         return -2;
     }
@@ -440,8 +450,8 @@ static size_t dh_pkey_dirty_cnt(const EVP_PKEY *pkey)
 }
 
 static int dh_pkey_export_to(const EVP_PKEY *from, void *to_keydata,
-                             EVP_KEYMGMT *to_keymgmt, OSSL_LIB_CTX *libctx,
-                             const char *propq)
+                             OSSL_FUNC_keymgmt_import_fn *importer,
+                             OSSL_LIB_CTX *libctx, const char *propq)
 {
     DH *dh = from->pkey.dh;
     OSSL_PARAM_BLD *tmpl;
@@ -452,13 +462,6 @@ static int dh_pkey_export_to(const EVP_PKEY *from, void *to_keydata,
     OSSL_PARAM *params = NULL;
     int selection = 0;
     int rv = 0;
-
-    /*
-     * If the DH method is foreign, then we can't be sure of anything, and
-     * can therefore not export or pretend to export.
-     */
-    if (ossl_dh_get_method(dh) != DH_OpenSSL())
-        return 0;
 
     if (p == NULL || g == NULL)
         return 0;
@@ -495,7 +498,7 @@ static int dh_pkey_export_to(const EVP_PKEY *from, void *to_keydata,
         goto err;
 
     /* We export, the provider imports */
-    rv = evp_keymgmt_import(to_keymgmt, to_keydata, selection, params);
+    rv = importer(to_keydata, selection, params);
 
     OSSL_PARAM_free(params);
 err:
@@ -511,14 +514,14 @@ static int dh_pkey_import_from_type(const OSSL_PARAM params[], void *vpctx,
     DH *dh = ossl_dh_new_ex(pctx->libctx);
 
     if (dh == NULL) {
-        ERR_raise(ERR_LIB_DH, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DH, ERR_R_DH_LIB);
         return 0;
     }
     DH_clear_flags(dh, DH_FLAG_TYPE_MASK);
     DH_set_flags(dh, type == EVP_PKEY_DH ? DH_FLAG_TYPE_DH : DH_FLAG_TYPE_DHX);
 
     if (!ossl_dh_params_fromdata(dh, params)
-        || !ossl_dh_key_fromdata(dh, params)
+        || !ossl_dh_key_fromdata(dh, params, 1)
         || !EVP_PKEY_assign(pkey, type, dh)) {
         DH_free(dh);
         return 0;
@@ -536,46 +539,6 @@ static int dhx_pkey_import_from(const OSSL_PARAM params[], void *vpctx)
     return dh_pkey_import_from_type(params, vpctx, EVP_PKEY_DHX);
 }
 
-static ossl_inline int dh_bn_dup_check(BIGNUM **out, const BIGNUM *f)
-{
-    if (f != NULL && (*out = BN_dup(f)) == NULL)
-        return 0;
-    return 1;
-}
-
-static DH *dh_dup(const DH *dh)
-{
-    DH *dupkey = NULL;
-
-    /* Do not try to duplicate foreign DH keys */
-    if (ossl_dh_get_method(dh) != DH_OpenSSL())
-        return NULL;
-
-    if ((dupkey = ossl_dh_new_ex(dh->libctx)) == NULL)
-        return NULL;
-
-    dupkey->length = DH_get_length(dh);
-    if (!ossl_ffc_params_copy(&dupkey->params, &dh->params))
-        goto err;
-
-    dupkey->flags = dh->flags;
-
-    if (!dh_bn_dup_check(&dupkey->pub_key, dh->pub_key))
-        goto err;
-    if (!dh_bn_dup_check(&dupkey->priv_key, dh->priv_key))
-        goto err;
-
-    if (!CRYPTO_dup_ex_data(CRYPTO_EX_INDEX_DH,
-                            &dupkey->ex_data, &dh->ex_data))
-        goto err;
-
-    return dupkey;
-
- err:
-    DH_free(dupkey);
-    return NULL;
-}
-
 static int dh_pkey_copy(EVP_PKEY *to, EVP_PKEY *from)
 {
     DH *dh = from->pkey.dh;
@@ -583,7 +546,7 @@ static int dh_pkey_copy(EVP_PKEY *to, EVP_PKEY *from)
     int ret;
 
     if (dh != NULL) {
-        dupkey = dh_dup(dh);
+        dupkey = ossl_dh_dup(dh, OSSL_KEYMGMT_SELECT_ALL);
         if (dupkey == NULL)
             return 0;
     }

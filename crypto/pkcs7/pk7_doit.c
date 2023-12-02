@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -8,12 +8,14 @@
  */
 
 #include <stdio.h>
-#include "internal/cryptlib.h"
 #include <openssl/rand.h>
 #include <openssl/objects.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 #include <openssl/err.h>
+#include "internal/cryptlib.h"
+#include "internal/sizes.h"
+#include "crypto/evp.h"
 #include "pk7_local.h"
 
 static int add_attribute(STACK_OF(X509_ATTRIBUTE) **sk, int nid, int atrtype,
@@ -57,7 +59,7 @@ static int pkcs7_bio_add_digest(BIO **pbio, X509_ALGOR *alg,
                                 const PKCS7_CTX *ctx)
 {
     BIO *btmp;
-    const char *name;
+    char name[OSSL_MAX_NAME_SIZE];
     EVP_MD *fetched = NULL;
     const EVP_MD *md;
 
@@ -66,7 +68,7 @@ static int pkcs7_bio_add_digest(BIO **pbio, X509_ALGOR *alg,
         goto err;
     }
 
-    name = OBJ_nid2sn(OBJ_obj2nid(alg->algorithm));
+    OBJ_obj2txt(name, sizeof(name), alg->algorithm, 0);
 
     (void)ERR_set_mark();
     fetched = EVP_MD_fetch(ossl_pkcs7_ctx_get0_libctx(ctx), name,
@@ -83,7 +85,11 @@ static int pkcs7_bio_add_digest(BIO **pbio, X509_ALGOR *alg,
     }
     (void)ERR_pop_to_mark();
 
-    BIO_set_md(btmp, md);
+    if (BIO_set_md(btmp, md) <= 0) {
+        ERR_raise(ERR_LIB_PKCS7, ERR_R_BIO_LIB);
+        EVP_MD_free(fetched);
+        goto err;
+    }
     EVP_MD_free(fetched);
     if (*pbio == NULL)
         *pbio = btmp;
@@ -126,11 +132,8 @@ static int pkcs7_encode_rinfo(PKCS7_RECIP_INFO *ri,
         goto err;
 
     ek = OPENSSL_malloc(eklen);
-
-    if (ek == NULL) {
-        ERR_raise(ERR_LIB_PKCS7, ERR_R_MALLOC_FAILURE);
+    if (ek == NULL)
         goto err;
-    }
 
     if (EVP_PKEY_encrypt(pctx, ek, &eklen, key, keylen) <= 0)
         goto err;
@@ -165,25 +168,17 @@ static int pkcs7_decrypt_rinfo(unsigned char **pek, int *peklen,
     if (EVP_PKEY_decrypt_init(pctx) <= 0)
         goto err;
 
-    if (EVP_PKEY_decrypt(pctx, NULL, &eklen,
-                         ri->enc_key->data, ri->enc_key->length) <= 0)
-        goto err;
+    if (EVP_PKEY_is_a(pkey, "RSA"))
+        /* upper layer pkcs7 code incorrectly assumes that a successful RSA
+         * decryption means that the key matches ciphertext (which never
+         * was the case, implicit rejection or not), so to make it work
+         * disable implicit rejection for RSA keys */
+        EVP_PKEY_CTX_ctrl_str(pctx, "rsa_pkcs1_implicit_rejection", "0");
 
-    ek = OPENSSL_malloc(eklen);
-
-    if (ek == NULL) {
-        ERR_raise(ERR_LIB_PKCS7, ERR_R_MALLOC_FAILURE);
+    ret = evp_pkey_decrypt_alloc(pctx, &ek, &eklen, fixlen,
+                                 ri->enc_key->data, ri->enc_key->length);
+    if (ret <= 0)
         goto err;
-    }
-
-    if (EVP_PKEY_decrypt(pctx, ek, &eklen,
-                         ri->enc_key->data, ri->enc_key->length) <= 0
-            || eklen == 0
-            || (fixlen != 0 && eklen != fixlen)) {
-        ret = 0;
-        ERR_raise(ERR_LIB_PKCS7, ERR_R_EVP_LIB);
-        goto err;
-    }
 
     ret = 1;
 
@@ -295,16 +290,16 @@ BIO *PKCS7_dataInit(PKCS7 *p7, BIO *bio)
             goto err;
         }
         BIO_get_cipher_ctx(btmp, &ctx);
-        keylen = EVP_CIPHER_key_length(evp_cipher);
-        ivlen = EVP_CIPHER_iv_length(evp_cipher);
-        xalg->algorithm = OBJ_nid2obj(EVP_CIPHER_type(evp_cipher));
+        keylen = EVP_CIPHER_get_key_length(evp_cipher);
+        ivlen = EVP_CIPHER_get_iv_length(evp_cipher);
+        xalg->algorithm = OBJ_nid2obj(EVP_CIPHER_get_type(evp_cipher));
         if (ivlen > 0)
-            if (RAND_bytes_ex(libctx, iv, ivlen) <= 0)
+            if (RAND_bytes_ex(libctx, iv, ivlen, 0) <= 0)
                 goto err;
 
         (void)ERR_set_mark();
         fetched_cipher = EVP_CIPHER_fetch(libctx,
-                                          EVP_CIPHER_name(evp_cipher),
+                                          EVP_CIPHER_get0_name(evp_cipher),
                                           propq);
         (void)ERR_pop_to_mark();
         if (fetched_cipher != NULL)
@@ -329,7 +324,7 @@ BIO *PKCS7_dataInit(PKCS7 *p7, BIO *bio)
                 if (xalg->parameter == NULL)
                     goto err;
             }
-            if (EVP_CIPHER_param_to_asn1(ctx, xalg->parameter) < 0)
+            if (EVP_CIPHER_param_to_asn1(ctx, xalg->parameter) <= 0)
                 goto err;
         }
 
@@ -404,7 +399,7 @@ BIO *PKCS7_dataDecode(PKCS7 *p7, EVP_PKEY *pkey, BIO *in_bio, X509 *pcert)
     PKCS7_RECIP_INFO *ri = NULL;
     unsigned char *ek = NULL, *tkey = NULL;
     int eklen = 0, tkeylen = 0;
-    const char *name;
+    char name[OSSL_MAX_NAME_SIZE];
     const PKCS7_CTX *p7_ctx;
     OSSL_LIB_CTX *libctx;
     const char *propq;
@@ -448,7 +443,7 @@ BIO *PKCS7_dataDecode(PKCS7 *p7, EVP_PKEY *pkey, BIO *in_bio, X509 *pcert)
         data_body = p7->d.signed_and_enveloped->enc_data->enc_data;
         enc_alg = p7->d.signed_and_enveloped->enc_data->algorithm;
 
-        name = OBJ_nid2sn(OBJ_obj2nid(enc_alg->algorithm));
+        OBJ_obj2txt(name, sizeof(name), enc_alg->algorithm, 0);
 
         (void)ERR_set_mark();
         evp_cipher = EVP_CIPHER_fetch(libctx, name, propq);
@@ -469,7 +464,7 @@ BIO *PKCS7_dataDecode(PKCS7 *p7, EVP_PKEY *pkey, BIO *in_bio, X509 *pcert)
         enc_alg = p7->d.enveloped->enc_data->algorithm;
         /* data_body is NULL if the optional EncryptedContent is missing. */
         data_body = p7->d.enveloped->enc_data->enc_data;
-        name = OBJ_nid2sn(OBJ_obj2nid(enc_alg->algorithm));
+        OBJ_obj2txt(name, sizeof(name), enc_alg->algorithm, 0);
 
         (void)ERR_set_mark();
         evp_cipher = EVP_CIPHER_fetch(libctx, name, propq);
@@ -505,7 +500,7 @@ BIO *PKCS7_dataDecode(PKCS7 *p7, EVP_PKEY *pkey, BIO *in_bio, X509 *pcert)
                 goto err;
             }
 
-            name = OBJ_nid2sn(OBJ_obj2nid(xa->algorithm));
+            OBJ_obj2txt(name, sizeof(name), xa->algorithm, 0);
 
             (void)ERR_set_mark();
             evp_md = EVP_MD_fetch(libctx, name, propq);
@@ -521,7 +516,11 @@ BIO *PKCS7_dataDecode(PKCS7 *p7, EVP_PKEY *pkey, BIO *in_bio, X509 *pcert)
             }
             (void)ERR_pop_to_mark();
 
-            BIO_set_md(btmp, md);
+            if (BIO_set_md(btmp, md) <= 0) {
+                EVP_MD_free(evp_md);
+                ERR_raise(ERR_LIB_PKCS7, ERR_R_BIO_LIB);
+                goto err;
+            }
             EVP_MD_free(evp_md);
             if (out == NULL)
                 out = btmp;
@@ -571,7 +570,7 @@ BIO *PKCS7_dataDecode(PKCS7 *p7, EVP_PKEY *pkey, BIO *in_bio, X509 *pcert)
                 ri = sk_PKCS7_RECIP_INFO_value(rsk, i);
                 ri->ctx = p7_ctx;
                 if (pkcs7_decrypt_rinfo(&ek, &eklen, ri, pkey,
-                        EVP_CIPHER_key_length(cipher)) < 0)
+                        EVP_CIPHER_get_key_length(cipher)) < 0)
                     goto err;
                 ERR_clear_error();
             }
@@ -587,10 +586,10 @@ BIO *PKCS7_dataDecode(PKCS7 *p7, EVP_PKEY *pkey, BIO *in_bio, X509 *pcert)
         BIO_get_cipher_ctx(etmp, &evp_ctx);
         if (EVP_CipherInit_ex(evp_ctx, cipher, NULL, NULL, NULL, 0) <= 0)
             goto err;
-        if (EVP_CIPHER_asn1_to_param(evp_ctx, enc_alg->parameter) < 0)
+        if (EVP_CIPHER_asn1_to_param(evp_ctx, enc_alg->parameter) <= 0)
             goto err;
         /* Generate random key as MMA defence */
-        len = EVP_CIPHER_CTX_key_length(evp_ctx);
+        len = EVP_CIPHER_CTX_get_key_length(evp_ctx);
         if (len <= 0)
             goto err;
         tkeylen = (size_t)len;
@@ -605,13 +604,13 @@ BIO *PKCS7_dataDecode(PKCS7 *p7, EVP_PKEY *pkey, BIO *in_bio, X509 *pcert)
             tkey = NULL;
         }
 
-        if (eklen != EVP_CIPHER_CTX_key_length(evp_ctx)) {
+        if (eklen != EVP_CIPHER_CTX_get_key_length(evp_ctx)) {
             /*
              * Some S/MIME clients don't use the same key and effective key
              * length. The key length is determined by the size of the
              * decrypted RSA key.
              */
-            if (!EVP_CIPHER_CTX_set_key_length(evp_ctx, eklen)) {
+            if (EVP_CIPHER_CTX_set_key_length(evp_ctx, eklen) <= 0) {
                 /* Use random key as MMA defence */
                 OPENSSL_clear_free(ek, eklen);
                 ek = tkey;
@@ -678,7 +677,7 @@ static BIO *PKCS7_find_digest(EVP_MD_CTX **pmd, BIO *bio, int nid)
             ERR_raise(ERR_LIB_PKCS7, ERR_R_INTERNAL_ERROR);
             return NULL;
         }
-        if (EVP_MD_CTX_type(*pmd) == nid)
+        if (EVP_MD_CTX_get_type(*pmd) == nid)
             return bio;
         bio = BIO_next(bio);
     }
@@ -693,7 +692,7 @@ static int do_pkcs7_signed_attrib(PKCS7_SIGNER_INFO *si, EVP_MD_CTX *mctx)
     /* Add signing time if not already present */
     if (!PKCS7_get_signed_attribute(si, NID_pkcs9_signingTime)) {
         if (!PKCS7_add0_attrib_signing_time(si, NULL)) {
-            ERR_raise(ERR_LIB_PKCS7, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_PKCS7, ERR_R_PKCS7_LIB);
             return 0;
         }
     }
@@ -704,7 +703,7 @@ static int do_pkcs7_signed_attrib(PKCS7_SIGNER_INFO *si, EVP_MD_CTX *mctx)
         return 0;
     }
     if (!PKCS7_add1_attrib_digest(si, md_data, md_len)) {
-        ERR_raise(ERR_LIB_PKCS7, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PKCS7, ERR_R_PKCS7_LIB);
         return 0;
     }
 
@@ -741,7 +740,7 @@ int PKCS7_dataFinal(PKCS7 *p7, BIO *bio)
 
     ctx_tmp = EVP_MD_CTX_new();
     if (ctx_tmp == NULL) {
-        ERR_raise(ERR_LIB_PKCS7, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PKCS7, ERR_R_EVP_LIB);
         return 0;
     }
 
@@ -759,7 +758,7 @@ int PKCS7_dataFinal(PKCS7 *p7, BIO *bio)
         if (os == NULL) {
             os = ASN1_OCTET_STRING_new();
             if (os == NULL) {
-                ERR_raise(ERR_LIB_PKCS7, ERR_R_MALLOC_FAILURE);
+                ERR_raise(ERR_LIB_PKCS7, ERR_R_ASN1_LIB);
                 goto err;
             }
             p7->d.signed_and_enveloped->enc_data->enc_data = os;
@@ -771,7 +770,7 @@ int PKCS7_dataFinal(PKCS7 *p7, BIO *bio)
         if (os == NULL) {
             os = ASN1_OCTET_STRING_new();
             if (os == NULL) {
-                ERR_raise(ERR_LIB_PKCS7, ERR_R_MALLOC_FAILURE);
+                ERR_raise(ERR_LIB_PKCS7, ERR_R_ASN1_LIB);
                 goto err;
             }
             p7->d.enveloped->enc_data->enc_data = os;
@@ -835,10 +834,9 @@ int PKCS7_dataFinal(PKCS7 *p7, BIO *bio)
                     goto err;
             } else {
                 unsigned char *abuf = NULL;
-                unsigned int abuflen;
-                abuflen = EVP_PKEY_size(si->pkey);
-                abuf = OPENSSL_malloc(abuflen);
-                if (abuf == NULL)
+                unsigned int abuflen = EVP_PKEY_get_size(si->pkey);
+
+                if (abuflen == 0 || (abuf = OPENSSL_malloc(abuflen)) == NULL)
                     goto err;
 
                 if (!EVP_SignFinal_ex(ctx_tmp, abuf, &abuflen, si->pkey,
@@ -910,11 +908,11 @@ int PKCS7_SIGNER_INFO_sign(PKCS7_SIGNER_INFO *si)
 
     mctx = EVP_MD_CTX_new();
     if (mctx == NULL) {
-        ERR_raise(ERR_LIB_PKCS7, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PKCS7, ERR_R_EVP_LIB);
         goto err;
     }
 
-    if (EVP_DigestSignInit_ex(mctx, &pctx, EVP_MD_name(md),
+    if (EVP_DigestSignInit_ex(mctx, &pctx, EVP_MD_get0_name(md),
                               ossl_pkcs7_ctx_get0_libctx(ctx),
                               ossl_pkcs7_ctx_get0_propq(ctx), si->pkey,
                               NULL) <= 0)
@@ -948,13 +946,15 @@ int PKCS7_SIGNER_INFO_sign(PKCS7_SIGNER_INFO *si)
     return 0;
 }
 
+/* This partly overlaps with PKCS7_verify(). It does not support flags. */
 int PKCS7_dataVerify(X509_STORE *cert_store, X509_STORE_CTX *ctx, BIO *bio,
                      PKCS7 *p7, PKCS7_SIGNER_INFO *si)
 {
     PKCS7_ISSUER_AND_SERIAL *ias;
     int ret = 0, i;
-    STACK_OF(X509) *cert;
-    X509 *x509;
+    STACK_OF(X509) *untrusted;
+    STACK_OF(X509_CRL) *crls;
+    X509 *signer;
 
     if (p7 == NULL) {
         ERR_raise(ERR_LIB_PKCS7, PKCS7_R_INVALID_NULL_POINTER);
@@ -967,26 +967,30 @@ int PKCS7_dataVerify(X509_STORE *cert_store, X509_STORE_CTX *ctx, BIO *bio,
     }
 
     if (PKCS7_type_is_signed(p7)) {
-        cert = p7->d.sign->cert;
+        untrusted = p7->d.sign->cert;
+        crls = p7->d.sign->crl;
     } else if (PKCS7_type_is_signedAndEnveloped(p7)) {
-        cert = p7->d.signed_and_enveloped->cert;
+        untrusted = p7->d.signed_and_enveloped->cert;
+        crls = p7->d.signed_and_enveloped->crl;
     } else {
         ERR_raise(ERR_LIB_PKCS7, PKCS7_R_WRONG_PKCS7_TYPE);
         goto err;
     }
+    X509_STORE_CTX_set0_crls(ctx, crls);
+
     /* XXXXXXXXXXXXXXXXXXXXXXX */
     ias = si->issuer_and_serial;
 
-    x509 = X509_find_by_issuer_and_serial(cert, ias->issuer, ias->serial);
+    signer = X509_find_by_issuer_and_serial(untrusted, ias->issuer, ias->serial);
 
-    /* were we able to find the cert in passed to us */
-    if (x509 == NULL) {
+    /* Were we able to find the signer certificate in passed to us? */
+    if (signer == NULL) {
         ERR_raise(ERR_LIB_PKCS7, PKCS7_R_UNABLE_TO_FIND_CERTIFICATE);
         goto err;
     }
 
     /* Lets verify */
-    if (!X509_STORE_CTX_init(ctx, cert_store, x509, cert)) {
+    if (!X509_STORE_CTX_init(ctx, cert_store, signer, untrusted)) {
         ERR_raise(ERR_LIB_PKCS7, ERR_R_X509_LIB);
         goto err;
     }
@@ -997,13 +1001,13 @@ int PKCS7_dataVerify(X509_STORE *cert_store, X509_STORE_CTX *ctx, BIO *bio,
         goto err;
     }
 
-    return PKCS7_signatureVerify(bio, p7, si, x509);
+    return PKCS7_signatureVerify(bio, p7, si, signer);
  err:
     return ret;
 }
 
 int PKCS7_signatureVerify(BIO *bio, PKCS7 *p7, PKCS7_SIGNER_INFO *si,
-                          X509 *x509)
+                          X509 *signer)
 {
     ASN1_OCTET_STRING *os;
     EVP_MD_CTX *mdc_tmp, *mdc;
@@ -1020,7 +1024,7 @@ int PKCS7_signatureVerify(BIO *bio, PKCS7 *p7, PKCS7_SIGNER_INFO *si,
 
     mdc_tmp = EVP_MD_CTX_new();
     if (mdc_tmp == NULL) {
-        ERR_raise(ERR_LIB_PKCS7, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PKCS7, ERR_R_EVP_LIB);
         goto err;
     }
 
@@ -1043,13 +1047,13 @@ int PKCS7_signatureVerify(BIO *bio, PKCS7 *p7, PKCS7_SIGNER_INFO *si,
             ERR_raise(ERR_LIB_PKCS7, ERR_R_INTERNAL_ERROR);
             goto err;
         }
-        if (EVP_MD_CTX_type(mdc) == md_type)
+        if (EVP_MD_CTX_get_type(mdc) == md_type)
             break;
         /*
          * Workaround for some broken clients that put the signature OID
          * instead of the digest OID in digest_alg->algorithm
          */
-        if (EVP_MD_pkey_type(EVP_MD_CTX_md(mdc)) == md_type)
+        if (EVP_MD_get_pkey_type(EVP_MD_CTX_get0_md(mdc)) == md_type)
             break;
         btmp = BIO_next(btmp);
     }
@@ -1110,7 +1114,7 @@ int PKCS7_signatureVerify(BIO *bio, PKCS7 *p7, PKCS7_SIGNER_INFO *si,
     }
 
     os = si->enc_digest;
-    pkey = X509_get0_pubkey(x509);
+    pkey = X509_get0_pubkey(signer);
     if (pkey == NULL) {
         ret = -1;
         goto err;
@@ -1161,11 +1165,11 @@ ASN1_TYPE *PKCS7_get_attribute(const PKCS7_SIGNER_INFO *si, int nid)
 
 static ASN1_TYPE *get_attribute(const STACK_OF(X509_ATTRIBUTE) *sk, int nid)
 {
-    int idx;
-    X509_ATTRIBUTE *xa;
-    idx = X509at_get_attr_by_NID(sk, nid, -1);
-    xa = X509at_get_attr(sk, idx);
-    return X509_ATTRIBUTE_get0_type(xa, 0);
+    int idx = X509at_get_attr_by_NID(sk, nid, -1);
+
+    if (idx < 0)
+        return NULL;
+    return X509_ATTRIBUTE_get0_type(X509at_get_attr(sk, idx), 0);
 }
 
 ASN1_OCTET_STRING *PKCS7_digest_from_attributes(STACK_OF(X509_ATTRIBUTE) *sk)

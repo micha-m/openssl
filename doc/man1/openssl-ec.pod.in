@@ -33,8 +33,6 @@ B<openssl> B<ec>
 [B<-check>]
 {- $OpenSSL::safe::opt_engine_synopsis -}{- $OpenSSL::safe::opt_provider_synopsis -}
 
-=for openssl ifdef engine
-
 =head1 DESCRIPTION
 
 The L<openssl-ec(1)> command processes EC keys. They can be converted between
@@ -53,13 +51,12 @@ Print out a usage message.
 
 =item B<-inform> B<DER>|B<PEM>|B<P12>|B<ENGINE>
 
-The key input format; the default is B<PEM>.
-The only value with effect is B<ENGINE>; all others have become obsolete.
+The key input format; unspecified by default.
 See L<openssl-format-options(1)> for details.
 
 =item B<-outform> B<DER>|B<PEM>
 
-The key output formats; the default is B<PEM>.
+The key output format; the default is B<PEM>.
 See L<openssl-format-options(1)> for details.
 
 Private keys are an SEC1 private key or PKCS#8 format.
@@ -103,10 +100,15 @@ Prints out the public, private key components and parameters.
 
 This option prevents output of the encoded version of the key.
 
+=item B<-param_out>
+
+Print the elliptic curve parameters.
+
 =item B<-pubin>
 
-By default, a private key is read from the input file. With this option a
-public key is read instead.
+By default a private key is read from the input.
+With this option a public key is read instead.
+If the input contains no public key but a private key, its public part is used.
 
 =item B<-pubout>
 
@@ -117,8 +119,8 @@ a public key.
 =item B<-conv_form> I<arg>
 
 This specifies how the points on the elliptic curve are converted
-into octet strings. Possible values are: B<compressed> (the default
-value), B<uncompressed> and B<hybrid>. For more information regarding
+into octet strings. Possible values are: B<compressed>, B<uncompressed> (the
+default value) and B<hybrid>. For more information regarding
 the point conversion forms please read the X9.62 standard.
 B<Note> Due to patent issues the B<compressed> option is disabled
 by default for binary curves and can be enabled by defining
@@ -148,10 +150,13 @@ This option checks the consistency of an EC private or public key.
 
 =back
 
+The L<openssl-pkey(1)> command is capable of performing all the operations
+this command can, as well as supporting other public key types.
+
 =head1 EXAMPLES
 
-Examples equivalent to these can be found in the documentation for the
-non-deprecated L<openssl-pkey(1)> command.
+The documentation for the L<openssl-pkey(1)> command contains examples
+equivalent to the ones listed here.
 
 To encrypt a private key using triple DES:
 
@@ -194,7 +199,7 @@ with keys loaded from an engine in OpenSSL 3.0.
 
 =head1 COPYRIGHT
 
-Copyright 2003-2021 The OpenSSL Project Authors. All Rights Reserved.
+Copyright 2003-2023 The OpenSSL Project Authors. All Rights Reserved.
 
 Licensed under the Apache License 2.0 (the "License").  You may not use
 this file except in compliance with the License.  You can obtain a copy

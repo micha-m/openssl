@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2017 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2017-2021 The OpenSSL Project Authors. All Rights Reserved.
 #
 # Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
@@ -37,8 +37,8 @@ SKIP: {
     skip "DSA disabled", 1, if disabled("dsa");
     # dsa
     ok(run(test(["x509_check_cert_pkey_test",
-		 src_file("server-dsa-cert.pem"),
-		 src_file("server-dsa-key.pem"), "cert", "ok"])));
+                 src_file("server-dsa-cert.pem"),
+                 src_file("server-dsa-key.pem"), "cert", "ok"])));
 }
 # ecc
 SKIP: {

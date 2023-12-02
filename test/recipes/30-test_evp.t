@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2015-2021 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2015-2023 The OpenSSL Project Authors. All Rights Reserved.
 #
 # Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
@@ -22,11 +22,15 @@ use lib bldtop_dir('.');
 
 my $no_fips = disabled('fips') || ($ENV{NO_FIPS} // 0);
 my $no_legacy = disabled('legacy') || ($ENV{NO_LEGACY} // 0);
+my $no_des = disabled("des");
 my $no_dh = disabled("dh");
 my $no_dsa = disabled("dsa");
 my $no_ec = disabled("ec");
-my $no_gost = disabled("gost");
+my $no_ecx = disabled("ecx");
+my $no_ec2m = disabled("ec2m");
 my $no_sm2 = disabled("sm2");
+my $no_siv = disabled("siv");
+my $no_argon2 = disabled("argon2");
 
 # Default config depends on if the legacy module is built or not
 my $defaultcnf = $no_legacy ? 'default.cnf' : 'default-and-legacy.cnf';
@@ -41,12 +45,17 @@ my @files = qw(
                 evpciph_aes_common.txt
                 evpciph_aes_cts.txt
                 evpciph_aes_wrap.txt
+                evpciph_aes_stitched.txt
                 evpciph_des3_common.txt
                 evpkdf_hkdf.txt
+                evpkdf_kbkdf_counter.txt
+                evpkdf_kbkdf_kmac.txt
+                evpkdf_pbkdf1.txt
                 evpkdf_pbkdf2.txt
                 evpkdf_ss.txt
                 evpkdf_ssh.txt
                 evpkdf_tls12_prf.txt
+                evpkdf_tls13_kdf.txt
                 evpkdf_x942.txt
                 evpkdf_x963.txt
                 evpmac_common.txt
@@ -60,30 +69,38 @@ push @files, qw(
                 evppkey_ffdhe.txt
                 evppkey_dh.txt
                ) unless $no_dh;
+push @files, qw(
+                evpkdf_x942_des.txt
+                evpmac_cmac_des.txt
+               ) unless $no_des;
 push @files, qw(evppkey_dsa.txt) unless $no_dsa;
-push @files, qw(evppkey_ecx.txt) unless $no_ec;
+push @files, qw(
+                evppkey_ecx.txt
+                evppkey_mismatch_ecx.txt
+               ) unless $no_ecx;
 push @files, qw(
                 evppkey_ecc.txt
                 evppkey_ecdh.txt
                 evppkey_ecdsa.txt
                 evppkey_kas.txt
                 evppkey_mismatch.txt
-               ) unless $no_ec || $no_gost;
+               ) unless $no_ec;
 
 # A list of tests that only run with the default provider
 # (i.e. The algorithms are not present in the fips provider)
 my @defltfiles = qw(
                      evpciph_aes_ocb.txt
-                     evpciph_aes_siv.txt
                      evpciph_aria.txt 
                      evpciph_bf.txt
                      evpciph_camellia.txt
+                     evpciph_camellia_cts.txt
                      evpciph_cast5.txt
                      evpciph_chacha.txt
                      evpciph_des.txt
                      evpciph_idea.txt
                      evpciph_rc2.txt
                      evpciph_rc4.txt
+                     evpciph_rc4_stitched.txt
                      evpciph_rc5.txt
                      evpciph_seed.txt
                      evpciph_sm4.txt
@@ -91,9 +108,11 @@ my @defltfiles = qw(
                      evpkdf_krb5.txt
                      evpkdf_scrypt.txt
                      evpkdf_tls11_prf.txt
+                     evpkdf_hmac_drbg.txt
                      evpmac_blake.txt
                      evpmac_poly1305.txt
                      evpmac_siphash.txt
+                     evpmac_sm3.txt
                      evpmd_blake.txt
                      evpmd_md.txt
                      evpmd_mdc2.txt
@@ -107,7 +126,12 @@ my @defltfiles = qw(
                      evppkey_rsa.txt
                     );
 push @defltfiles, qw(evppkey_brainpool.txt) unless $no_ec;
+push @defltfiles, qw(evppkey_ecdsa_rfc6979.txt) unless $no_ec;
+push @defltfiles, qw(evppkey_dsa_rfc6979.txt) unless $no_dsa;
 push @defltfiles, qw(evppkey_sm2.txt) unless $no_sm2;
+push @defltfiles, qw(evpciph_aes_gcm_siv.txt) unless $no_siv;
+push @defltfiles, qw(evpciph_aes_siv.txt) unless $no_siv;
+push @defltfiles, qw(evpkdf_argon2.txt) unless $no_argon2;
 
 plan tests =>
     + (scalar(@configs) * scalar(@files))
@@ -163,7 +187,8 @@ sub test_errors { # actually tests diagnostics of OSSL_STORE
 }
 
 SKIP: {
-    skip "DSA not disabled", 2 if !disabled("dsa");
+    skip "DSA not disabled or ERR disabled", 2
+        if !disabled("dsa") || disabled("err");
 
     ok(test_errors(key => 'server-dsa-key.pem',
                    out => 'server-dsa-key.err'),
@@ -171,7 +196,7 @@ SKIP: {
     ok(test_errors(key => 'server-dsa-pubkey.pem',
                    out => 'server-dsa-pubkey.err',
                    args => [ '-pubin' ],
-                   expected => 'unsupported algorithm'),
+                   expected => 'unsupported'),
        "expected error loading unsupported dsa public key");
 }
 

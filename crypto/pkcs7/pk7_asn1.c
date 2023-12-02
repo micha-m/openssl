@@ -41,7 +41,7 @@ static int pk7_cb(int operation, ASN1_VALUE **pval, const ASN1_ITEM *it,
     case ASN1_OP_STREAM_PRE:
         if (PKCS7_stream(&sarg->boundary, *pp7) <= 0)
             return 0;
-        /* fall thru */
+        /* fall through */
     case ASN1_OP_DETACHED_PRE:
         sarg->ndef_bio = PKCS7_dataInit(*pp7, sarg->out);
         if (!sarg->ndef_bio)
@@ -66,8 +66,16 @@ ASN1_NDEF_SEQUENCE_cb(PKCS7, pk7_cb) = {
 PKCS7 *d2i_PKCS7(PKCS7 **a, const unsigned char **in, long len)
 {
     PKCS7 *ret;
+    OSSL_LIB_CTX *libctx = NULL;
+    const char *propq = NULL;
 
-    ret = (PKCS7 *)ASN1_item_d2i((ASN1_VALUE **)a, in, len, (PKCS7_it()));
+    if (a != NULL && *a != NULL) {
+        libctx = (*a)->ctx.libctx;
+        propq = (*a)->ctx.propq;
+    }
+
+    ret = (PKCS7 *)ASN1_item_d2i_ex((ASN1_VALUE **)a, in, len, (PKCS7_it()),
+                                    libctx, propq);
     if (ret != NULL)
         ossl_pkcs7_resolve_libctx(ret);
     return ret;
@@ -85,7 +93,8 @@ PKCS7 *PKCS7_new(void)
 
 PKCS7 *PKCS7_new_ex(OSSL_LIB_CTX *libctx, const char *propq)
 {
-    PKCS7 *pkcs7 = PKCS7_new();
+    PKCS7 *pkcs7 = (PKCS7 *)ASN1_item_new_ex(ASN1_ITEM_rptr(PKCS7), libctx,
+                                             propq);
 
     if (pkcs7 != NULL) {
         pkcs7->ctx.libctx = libctx;
@@ -95,7 +104,6 @@ PKCS7 *PKCS7_new_ex(OSSL_LIB_CTX *libctx, const char *propq)
             if (pkcs7->ctx.propq == NULL) {
                 PKCS7_free(pkcs7);
                 pkcs7 = NULL;
-                ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
             }
         }
     }

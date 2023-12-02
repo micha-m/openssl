@@ -1,5 +1,5 @@
 /*
- * Copyright 2016-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2016-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -54,7 +54,7 @@ struct ossl_store_search_st {
      * Used by OSSL_STORE_SEARCH_BY_NAME and
      * OSSL_STORE_SEARCH_BY_ISSUER_SERIAL
      */
-    X509_NAME *name; /* TODO constify this; leads to API incompatibility */
+    X509_NAME *name;
 
     /* Used by OSSL_STORE_SEARCH_BY_ISSUER_SERIAL */
     const ASN1_INTEGER *serial;
@@ -92,7 +92,7 @@ struct ossl_store_loader_st {
     OSSL_STORE_load_fn load;
     OSSL_STORE_eof_fn eof;
     OSSL_STORE_error_fn error;
-    OSSL_STORE_close_fn close;
+    OSSL_STORE_close_fn closefn;
     OSSL_STORE_open_ex_fn open_ex;
 #endif
 
@@ -103,7 +103,6 @@ struct ossl_store_loader_st {
     const char *description;
 
     CRYPTO_REF_COUNT refcnt;
-    CRYPTO_RWLOCK *lock;
 
     OSSL_FUNC_store_open_fn *p_open;
     OSSL_FUNC_store_attach_fn *p_attach;
@@ -113,8 +112,10 @@ struct ossl_store_loader_st {
     OSSL_FUNC_store_eof_fn *p_eof;
     OSSL_FUNC_store_close_fn *p_close;
     OSSL_FUNC_store_export_object_fn *p_export_object;
+    OSSL_FUNC_store_delete_fn *p_delete;
+    OSSL_FUNC_store_open_ex_fn *p_open_ex;
 };
-DEFINE_LHASH_OF(OSSL_STORE_LOADER);
+DEFINE_LHASH_OF_EX(OSSL_STORE_LOADER);
 
 const OSSL_STORE_LOADER *ossl_store_get0_loader_int(const char *scheme);
 void ossl_store_destroy_loaders_int(void);
@@ -168,9 +169,6 @@ int ossl_store_file_detach_pem_bio_int(OSSL_STORE_LOADER_CTX *ctx);
 OSSL_STORE_LOADER *ossl_store_loader_fetch(OSSL_LIB_CTX *libctx,
                                            const char *scheme,
                                            const char *properties);
-OSSL_STORE_LOADER *ossl_store_loader_fetch_by_number(OSSL_LIB_CTX *libctx,
-                                                     int scheme_id,
-                                                     const char *properties);
 
 /* Standard function to handle the result from OSSL_FUNC_store_load() */
 struct ossl_load_result_data_st {

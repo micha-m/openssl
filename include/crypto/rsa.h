@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2019-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -13,7 +13,6 @@
 
 # include <openssl/core.h>
 # include <openssl/rsa.h>
-# include <openssl/x509.h>
 # include "crypto/types.h"
 
 #define RSA_MIN_MODULUS_BITS    512
@@ -35,8 +34,6 @@ int ossl_rsa_pss_params_30_copy(RSA_PSS_PARAMS_30 *to,
 int ossl_rsa_pss_params_30_is_unrestricted(const RSA_PSS_PARAMS_30 *rsa_pss_params);
 int ossl_rsa_pss_params_30_set_hashalg(RSA_PSS_PARAMS_30 *rsa_pss_params,
                                        int hashalg_nid);
-int ossl_rsa_pss_params_30_set_maskgenalg(RSA_PSS_PARAMS_30 *rsa_pss_params,
-                                          int maskgenalg_nid);
 int ossl_rsa_pss_params_30_set_maskgenhashalg(RSA_PSS_PARAMS_30 *rsa_pss_params,
                                               int maskgenhashalg_nid);
 int ossl_rsa_pss_params_30_set_saltlen(RSA_PSS_PARAMS_30 *rsa_pss_params,
@@ -63,9 +60,12 @@ int ossl_rsa_set0_all_params(RSA *r, const STACK_OF(BIGNUM) *primes,
 int ossl_rsa_get0_all_params(RSA *r, STACK_OF(BIGNUM_const) *primes,
                              STACK_OF(BIGNUM_const) *exps,
                              STACK_OF(BIGNUM_const) *coeffs);
+int ossl_rsa_is_foreign(const RSA *rsa);
+RSA *ossl_rsa_dup(const RSA *rsa, int selection);
 
-int ossl_rsa_todata(RSA *rsa, OSSL_PARAM_BLD *bld, OSSL_PARAM params[]);
-int ossl_rsa_fromdata(RSA *rsa, const OSSL_PARAM params[]);
+int ossl_rsa_todata(RSA *rsa, OSSL_PARAM_BLD *bld, OSSL_PARAM params[],
+                    int include_private);
+int ossl_rsa_fromdata(RSA *rsa, const OSSL_PARAM params[], int include_private);
 int ossl_rsa_pss_params_30_todata(const RSA_PSS_PARAMS_30 *pss,
                                   OSSL_PARAM_BLD *bld, OSSL_PARAM params[]);
 int ossl_rsa_pss_params_30_fromdata(RSA_PSS_PARAMS_30 *pss_params,
@@ -81,6 +81,10 @@ int ossl_rsa_param_decode(RSA *rsa, const X509_ALGOR *alg);
 RSA *ossl_rsa_key_from_pkcs8(const PKCS8_PRIV_KEY_INFO *p8inf,
                              OSSL_LIB_CTX *libctx, const char *propq);
 
+int ossl_rsa_padding_check_PKCS1_type_2(OSSL_LIB_CTX *ctx,
+                                        unsigned char *to, int tlen,
+                                        const unsigned char *from, int flen,
+                                        int num, unsigned char *kdk);
 int ossl_rsa_padding_check_PKCS1_type_2_TLS(OSSL_LIB_CTX *ctx, unsigned char *to,
                                             size_t tlen,
                                             const unsigned char *from,

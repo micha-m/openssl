@@ -1,5 +1,5 @@
 /*
- * Copyright 2004-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2004-2023 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2004, EdelKey Project. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -191,10 +191,8 @@ SRP_user_pwd *SRP_user_pwd_new(void)
 {
     SRP_user_pwd *ret;
 
-    if ((ret = OPENSSL_malloc(sizeof(*ret))) == NULL) {
-        /* ERR_raise(ERR_LIB_SRP, ERR_R_MALLOC_FAILURE); */ /*ckerr_ignore*/
+    if ((ret = OPENSSL_malloc(sizeof(*ret))) == NULL)
         return NULL;
-    }
     ret->N = NULL;
     ret->g = NULL;
     ret->s = NULL;
@@ -283,6 +281,7 @@ SRP_VBASE *SRP_VBASE_new(char *seed_key)
         return NULL;
     if ((vb->users_pwd = sk_SRP_user_pwd_new_null()) == NULL
         || (vb->gN_cache = sk_SRP_gN_cache_new_null()) == NULL) {
+        sk_SRP_user_pwd_free(vb->users_pwd);
         OPENSSL_free(vb);
         return NULL;
     }
@@ -393,7 +392,7 @@ static BIGNUM *SRP_gN_place_bn(STACK_OF(SRP_gN_cache) *gN_cache, char *ch)
 
 int SRP_VBASE_init(SRP_VBASE *vb, char *verifier_file)
 {
-    int error_code;
+    int error_code = SRP_ERR_MEMORY;
     STACK_OF(SRP_gN) *SRP_gN_tab = sk_SRP_gN_new_null();
     char *last_index = NULL;
     int i;
@@ -404,6 +403,9 @@ int SRP_VBASE_init(SRP_VBASE *vb, char *verifier_file)
 
     TXT_DB *tmpdb = NULL;
     BIO *in = BIO_new(BIO_s_file());
+
+    if (SRP_gN_tab == NULL)
+        goto err;
 
     error_code = SRP_ERR_OPEN_FILE;
 
@@ -551,6 +553,7 @@ SRP_user_pwd *SRP_VBASE_get1_by_user(SRP_VBASE *vb, char *username)
     unsigned char digv[SHA_DIGEST_LENGTH];
     unsigned char digs[SHA_DIGEST_LENGTH];
     EVP_MD_CTX *ctxt = NULL;
+    EVP_MD *md = NULL;
 
     if (vb == NULL)
         return NULL;
@@ -574,21 +577,27 @@ SRP_user_pwd *SRP_VBASE_get1_by_user(SRP_VBASE *vb, char *username)
 
     if (RAND_priv_bytes(digv, SHA_DIGEST_LENGTH) <= 0)
         goto err;
+    md = EVP_MD_fetch(NULL, SN_sha1, NULL);
+    if (md == NULL)
+        goto err;
     ctxt = EVP_MD_CTX_new();
     if (ctxt == NULL
-        || !EVP_DigestInit_ex(ctxt, EVP_sha1(), NULL)
+        || !EVP_DigestInit_ex(ctxt, md, NULL)
         || !EVP_DigestUpdate(ctxt, vb->seed_key, strlen(vb->seed_key))
         || !EVP_DigestUpdate(ctxt, username, strlen(username))
         || !EVP_DigestFinal_ex(ctxt, digs, NULL))
         goto err;
     EVP_MD_CTX_free(ctxt);
     ctxt = NULL;
+    EVP_MD_free(md);
+    md = NULL;
     if (SRP_user_pwd_set0_sv(user,
-                               BN_bin2bn(digs, SHA_DIGEST_LENGTH, NULL),
-                               BN_bin2bn(digv, SHA_DIGEST_LENGTH, NULL)))
+                             BN_bin2bn(digs, SHA_DIGEST_LENGTH, NULL),
+                             BN_bin2bn(digv, SHA_DIGEST_LENGTH, NULL)))
         return user;
 
  err:
+    EVP_MD_free(md);
     EVP_MD_CTX_free(ctxt);
     SRP_user_pwd_free(user);
     return NULL;
@@ -621,7 +630,7 @@ char *SRP_create_verifier_ex(const char *user, const char *pass, char **salt,
         if (N_bn_alloc == NULL)
             goto err;
         N_bn = N_bn_alloc;
-        if ((len = t_fromb64(tmp, sizeof(tmp) ,g)) <= 0)
+        if ((len = t_fromb64(tmp, sizeof(tmp), g)) <= 0)
             goto err;
         g_bn_alloc = BN_bin2bn(tmp, len, NULL);
         if (g_bn_alloc == NULL)
@@ -638,7 +647,7 @@ char *SRP_create_verifier_ex(const char *user, const char *pass, char **salt,
     }
 
     if (*salt == NULL) {
-        if (RAND_bytes_ex(libctx, tmp2, SRP_RANDOM_SALT_LEN) <= 0)
+        if (RAND_bytes_ex(libctx, tmp2, SRP_RANDOM_SALT_LEN, 0) <= 0)
             goto err;
 
         s = BN_bin2bn(tmp2, SRP_RANDOM_SALT_LEN, NULL);
@@ -712,7 +721,7 @@ int SRP_create_verifier_BN_ex(const char *user, const char *pass, BIGNUM **salt,
     BIGNUM *x = NULL;
     BN_CTX *bn_ctx = BN_CTX_new_ex(libctx);
     unsigned char tmp2[MAX_LEN];
-    BIGNUM *salttmp = NULL;
+    BIGNUM *salttmp = NULL, *verif;
 
     if ((user == NULL) ||
         (pass == NULL) ||
@@ -721,7 +730,7 @@ int SRP_create_verifier_BN_ex(const char *user, const char *pass, BIGNUM **salt,
         goto err;
 
     if (*salt == NULL) {
-        if (RAND_bytes_ex(libctx, tmp2, SRP_RANDOM_SALT_LEN) <= 0)
+        if (RAND_bytes_ex(libctx, tmp2, SRP_RANDOM_SALT_LEN, 0) <= 0)
             goto err;
 
         salttmp = BN_bin2bn(tmp2, SRP_RANDOM_SALT_LEN, NULL);
@@ -735,17 +744,18 @@ int SRP_create_verifier_BN_ex(const char *user, const char *pass, BIGNUM **salt,
     if (x == NULL)
         goto err;
 
-    *verifier = BN_new();
-    if (*verifier == NULL)
+    verif = BN_new();
+    if (verif == NULL)
         goto err;
 
-    if (!BN_mod_exp(*verifier, g, x, N, bn_ctx)) {
-        BN_clear_free(*verifier);
+    if (!BN_mod_exp(verif, g, x, N, bn_ctx)) {
+        BN_clear_free(verif);
         goto err;
     }
 
     result = 1;
     *salt = salttmp;
+    *verifier = verif;
 
  err:
     if (salt != NULL && *salt != salttmp)

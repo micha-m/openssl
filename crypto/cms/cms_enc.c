@@ -15,6 +15,7 @@
 #include <openssl/cms.h>
 #include <openssl/rand.h>
 #include "crypto/evp.h"
+#include "crypto/asn1.h"
 #include "cms_local.h"
 
 /* CMS EncryptedData Utilities */
@@ -44,7 +45,7 @@ BIO *ossl_cms_EncryptedContent_init_bio(CMS_EncryptedContentInfo *ec,
 
     b = BIO_new(BIO_f_cipher());
     if (b == NULL) {
-        ERR_raise(ERR_LIB_CMS, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_CMS, ERR_R_BIO_LIB);
         return NULL;
     }
 
@@ -62,7 +63,8 @@ BIO *ossl_cms_EncryptedContent_init_bio(CMS_EncryptedContentInfo *ec,
         cipher = EVP_get_cipherbyobj(calg->algorithm);
     }
     if (cipher != NULL) {
-        fetched_ciph = EVP_CIPHER_fetch(libctx, EVP_CIPHER_name(cipher), propq);
+        fetched_ciph = EVP_CIPHER_fetch(libctx, EVP_CIPHER_get0_name(cipher),
+                                        propq);
         if (fetched_ciph != NULL)
             cipher = fetched_ciph;
     }
@@ -79,11 +81,20 @@ BIO *ossl_cms_EncryptedContent_init_bio(CMS_EncryptedContentInfo *ec,
     }
 
     if (enc) {
-        calg->algorithm = OBJ_nid2obj(EVP_CIPHER_CTX_type(ctx));
+        calg->algorithm = OBJ_nid2obj(EVP_CIPHER_CTX_get_type(ctx));
+        if (calg->algorithm == NULL || calg->algorithm->nid == NID_undef) {
+            ERR_raise(ERR_LIB_CMS, CMS_R_UNSUPPORTED_CONTENT_ENCRYPTION_ALGORITHM);
+            goto err;
+        }
         /* Generate a random IV if we need one */
-        ivlen = EVP_CIPHER_CTX_iv_length(ctx);
+        ivlen = EVP_CIPHER_CTX_get_iv_length(ctx);
+        if (ivlen < 0) {
+            ERR_raise(ERR_LIB_CMS, ERR_R_EVP_LIB);
+            goto err;
+        }
+
         if (ivlen > 0) {
-            if (RAND_bytes_ex(libctx, iv, ivlen) <= 0)
+            if (RAND_bytes_ex(libctx, iv, ivlen, 0) <= 0)
                 goto err;
             piv = iv;
         }
@@ -92,7 +103,7 @@ BIO *ossl_cms_EncryptedContent_init_bio(CMS_EncryptedContentInfo *ec,
             ERR_raise(ERR_LIB_CMS, CMS_R_CIPHER_PARAMETER_INITIALISATION_ERROR);
             goto err;
         }
-        if ((EVP_CIPHER_flags(cipher) & EVP_CIPH_FLAG_AEAD_CIPHER)) {
+        if ((EVP_CIPHER_get_flags(cipher) & EVP_CIPH_FLAG_AEAD_CIPHER)) {
             piv = aparams.iv;
             if (ec->taglen > 0
                     && EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_AEAD_SET_TAG,
@@ -102,7 +113,7 @@ BIO *ossl_cms_EncryptedContent_init_bio(CMS_EncryptedContentInfo *ec,
             }
         }
     }
-    len = EVP_CIPHER_CTX_key_length(ctx);
+    len = EVP_CIPHER_CTX_get_key_length(ctx);
     if (len <= 0)
         goto err;
     tkeylen = (size_t)len;
@@ -110,10 +121,8 @@ BIO *ossl_cms_EncryptedContent_init_bio(CMS_EncryptedContentInfo *ec,
     /* Generate random session key */
     if (!enc || !ec->key) {
         tkey = OPENSSL_malloc(tkeylen);
-        if (tkey == NULL) {
-            ERR_raise(ERR_LIB_CMS, ERR_R_MALLOC_FAILURE);
+        if (tkey == NULL)
             goto err;
-        }
         if (EVP_CIPHER_CTX_rand_key(ctx, tkey) <= 0)
             goto err;
     }
@@ -157,13 +166,13 @@ BIO *ossl_cms_EncryptedContent_init_bio(CMS_EncryptedContentInfo *ec,
     if (enc) {
         calg->parameter = ASN1_TYPE_new();
         if (calg->parameter == NULL) {
-            ERR_raise(ERR_LIB_CMS, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_CMS, ERR_R_ASN1_LIB);
             goto err;
         }
-        if ((EVP_CIPHER_flags(cipher) & EVP_CIPH_FLAG_AEAD_CIPHER)) {
+        if ((EVP_CIPHER_get_flags(cipher) & EVP_CIPH_FLAG_AEAD_CIPHER)) {
             memcpy(aparams.iv, piv, ivlen);
             aparams.iv_len = ivlen;
-            aparams.tag_len = EVP_CIPHER_CTX_tag_length(ctx);
+            aparams.tag_len = EVP_CIPHER_CTX_get_tag_length(ctx);
             if (aparams.tag_len <= 0)
                 goto err;
         }
@@ -200,10 +209,8 @@ int ossl_cms_EncryptedContent_init(CMS_EncryptedContentInfo *ec,
 {
     ec->cipher = cipher;
     if (key) {
-        if ((ec->key = OPENSSL_malloc(keylen)) == NULL) {
-            ERR_raise(ERR_LIB_CMS, ERR_R_MALLOC_FAILURE);
+        if ((ec->key = OPENSSL_malloc(keylen)) == NULL)
             return 0;
-        }
         memcpy(ec->key, key, keylen);
     }
     ec->keylen = keylen;
@@ -224,7 +231,7 @@ int CMS_EncryptedData_set1_key(CMS_ContentInfo *cms, const EVP_CIPHER *ciph,
     if (ciph) {
         cms->d.encryptedData = M_ASN1_new_of(CMS_EncryptedData);
         if (!cms->d.encryptedData) {
-            ERR_raise(ERR_LIB_CMS, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_CMS, ERR_R_ASN1_LIB);
             return 0;
         }
         cms->contentType = OBJ_nid2obj(NID_pkcs7_encrypted);

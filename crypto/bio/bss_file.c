@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2021 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -11,7 +11,7 @@
 /*
  * Following definition aliases fopen to fopen64 on above mentioned
  * platforms. This makes it possible to open and sequentially access files
- * larger than 2GB from 32-bit application. It does not allow to traverse
+ * larger than 2GB from 32-bit application. It does not allow one to traverse
  * them beyond 2GB with fseek/ftell, but on the other hand *no* 32-bit
  * platform permits that, not with fseek/ftell. Not to mention that breaking
  * 2GB limit for seeking would require surgery to *our* API. But sequential
@@ -42,10 +42,8 @@ static int file_free(BIO *data);
 static const BIO_METHOD methods_filep = {
     BIO_TYPE_FILE,
     "FILE pointer",
-    /* TODO: Convert to new style write function */
     bwrite_conv,
     file_write,
-    /* TODO: Convert to new style read function */
     bread_conv,
     file_read,
     file_puts,
@@ -216,7 +214,7 @@ static long file_ctrl(BIO *b, int cmd, long num, void *ptr)
 #   define _IOB_ENTRIES 20
 #  endif
         /* Safety net to catch purely internal BIO_set_fp calls */
-#  if defined(_MSC_VER) && _MSC_VER>=1900
+#  if (defined(_MSC_VER) && _MSC_VER>=1900) || defined(__BORLANDC__)
         if (ptr == stdin || ptr == stdout || ptr == stderr)
             BIO_clear_flags(b, BIO_FLAGS_UPLINK_INTERNAL);
 #  elif defined(_IOB_ENTRIES)
@@ -407,10 +405,8 @@ static int file_free(BIO *a)
 static const BIO_METHOD methods_filep = {
     BIO_TYPE_FILE,
     "FILE pointer",
-    /* TODO: Convert to new style write function */
     bwrite_conv,
     file_write,
-    /* TODO: Convert to new style read function */
     bread_conv,
     file_read,
     file_puts,

@@ -1,5 +1,5 @@
 /*
- * Copyright 2007-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2007-2023 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright Nokia 2007-2019
  * Copyright Siemens AG 2015-2019
  *
@@ -107,7 +107,8 @@ static int execute_rr_create_test(CMP_MSG_TEST_FIXTURE *fixture)
 static int execute_certconf_create_test(CMP_MSG_TEST_FIXTURE *fixture)
 {
     EXECUTE_MSG_CREATION_TEST(ossl_cmp_certConf_new
-                              (fixture->cmp_ctx, fixture->fail_info, NULL));
+                              (fixture->cmp_ctx, OSSL_CMP_CERTREQID,
+                               fixture->fail_info, NULL));
 }
 
 static int execute_genm_create_test(CMP_MSG_TEST_FIXTURE *fixture)
@@ -149,7 +150,7 @@ static int test_cmp_create_ir_protection_set(void)
     fixture->bodytype = OSSL_CMP_PKIBODY_IR;
     fixture->err_code = -1;
     fixture->expected = 1;
-    if (!TEST_int_eq(1, RAND_bytes_ex(libctx, secret, sizeof(secret)))
+    if (!TEST_int_eq(1, RAND_bytes_ex(libctx, secret, sizeof(secret), 0))
             || !TEST_true(SET_OPT_UNPROTECTED_SEND(ctx, 0))
             || !TEST_true(set1_newPkey(ctx, newkey))
             || !TEST_true(OSSL_CMP_CTX_set1_secretValue(ctx, secret,
@@ -226,7 +227,7 @@ static int test_cmp_create_p10cr(void)
     fixture->bodytype = OSSL_CMP_PKIBODY_P10CR;
     fixture->err_code = CMP_R_ERROR_CREATING_CERTREQ;
     fixture->expected = 1;
-    if (!TEST_ptr(p10cr = load_csr_der(pkcs10_f))
+    if (!TEST_ptr(p10cr = load_csr_der(pkcs10_f, libctx))
             || !TEST_true(set1_newPkey(ctx, newkey))
             || !TEST_true(OSSL_CMP_CTX_set1_p10CSR(ctx, p10cr))) {
         tear_down(fixture);
@@ -338,7 +339,6 @@ static int test_cmp_create_error_msg(void)
     return result;
 }
 
-
 static int test_cmp_create_pollreq(void)
 {
     SETUP_TEST_FIXTURE(CMP_MSG_TEST_FIXTURE, set_up);
@@ -382,7 +382,6 @@ static int execute_certrep_create(CMP_MSG_TEST_FIXTURE *fixture)
     OSSL_CMP_CTX *ctx = fixture->cmp_ctx;
     OSSL_CMP_CERTREPMESSAGE *crepmsg = OSSL_CMP_CERTREPMESSAGE_new();
     OSSL_CMP_CERTRESPONSE *read_cresp, *cresp = OSSL_CMP_CERTRESPONSE_new();
-    EVP_PKEY *privkey;
     X509 *certfromresp = NULL;
     int res = 0;
 
@@ -404,8 +403,7 @@ static int execute_certrep_create(CMP_MSG_TEST_FIXTURE *fixture)
         goto err;
     if (!TEST_ptr_null(ossl_cmp_certrepmessage_get0_certresponse(crepmsg, 88)))
         goto err;
-    privkey = OSSL_CMP_CTX_get0_newPkey(ctx, 1); /* may be NULL */
-    certfromresp = ossl_cmp_certresponse_get1_cert(read_cresp, ctx, privkey);
+    certfromresp = ossl_cmp_certresponse_get1_cert(ctx, read_cresp);
     if (certfromresp == NULL || !TEST_int_eq(X509_cmp(cert, certfromresp), 0))
         goto err;
 
@@ -423,7 +421,6 @@ static int test_cmp_create_certrep(void)
     EXECUTE_TEST(execute_certrep_create, tear_down);
     return result;
 }
-
 
 static int execute_rp_create(CMP_MSG_TEST_FIXTURE *fixture)
 {
@@ -504,7 +501,7 @@ static int test_cmp_pkimessage_create(int bodytype)
     switch (fixture->bodytype = bodytype) {
     case OSSL_CMP_PKIBODY_P10CR:
         fixture->expected = 1;
-        p10cr = load_csr_der(pkcs10_f);
+        p10cr = load_csr_der(pkcs10_f, libctx);
         if (!TEST_true(OSSL_CMP_CTX_set1_p10CSR(fixture->cmp_ctx, p10cr))) {
             tear_down(fixture);
             fixture = NULL;
@@ -541,6 +538,8 @@ void cleanup_tests(void)
 {
     EVP_PKEY_free(newkey);
     X509_free(cert);
+    OSSL_PROVIDER_unload(default_null_provider);
+    OSSL_PROVIDER_unload(provider);
     OSSL_LIB_CTX_free(libctx);
 }
 
@@ -566,7 +565,7 @@ int setup_tests(void)
 
     if (!TEST_ptr(newkey = load_pkey_pem(newkey_f, libctx))
             || !TEST_ptr(cert = load_cert_pem(server_cert_f, libctx))
-            || !TEST_int_eq(1, RAND_bytes_ex(libctx, ref, sizeof(ref)))) {
+            || !TEST_int_eq(1, RAND_bytes_ex(libctx, ref, sizeof(ref), 0))) {
         cleanup_tests();
         return 0;
     }

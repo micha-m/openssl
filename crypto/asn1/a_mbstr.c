@@ -55,6 +55,8 @@ int ASN1_mbstring_ncopy(ASN1_STRING **out, const unsigned char *in, int len,
         len = strlen((const char *)in);
     if (!mask)
         mask = DIRSTRING_TYPE;
+    if (len < 0)
+        return -1;
 
     /* First do a string check and work out the number of characters */
     switch (inform) {
@@ -137,15 +139,13 @@ int ASN1_mbstring_ncopy(ASN1_STRING **out, const unsigned char *in, int len,
     if (*out) {
         free_out = 0;
         dest = *out;
-        OPENSSL_free(dest->data);
-        dest->data = NULL;
-        dest->length = 0;
+        ASN1_STRING_set0(dest,  NULL, 0);
         dest->type = str_type;
     } else {
         free_out = 1;
         dest = ASN1_STRING_type_new(str_type);
         if (dest == NULL) {
-            ERR_raise(ERR_LIB_ASN1, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_ASN1, ERR_R_ASN1_LIB);
             return -1;
         }
         *out = dest;
@@ -153,7 +153,7 @@ int ASN1_mbstring_ncopy(ASN1_STRING **out, const unsigned char *in, int len,
     /* If both the same type just copy across */
     if (inform == outform) {
         if (!ASN1_STRING_set(dest, in, len)) {
-            ERR_raise(ERR_LIB_ASN1, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_ASN1, ERR_R_ASN1_LIB);
             return -1;
         }
         return str_type;
@@ -185,7 +185,6 @@ int ASN1_mbstring_ncopy(ASN1_STRING **out, const unsigned char *in, int len,
     if ((p = OPENSSL_malloc(outlen + 1)) == NULL) {
         if (free_out)
             ASN1_STRING_free(dest);
-        ERR_raise(ERR_LIB_ASN1, ERR_R_MALLOC_FAILURE);
         return -1;
     }
     dest->length = outlen;

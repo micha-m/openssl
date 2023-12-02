@@ -303,8 +303,10 @@ ASN1_INTEGER *ossl_c2i_ASN1_INTEGER(ASN1_INTEGER **a, const unsigned char **pp,
     } else
         ret = *a;
 
-    if (ASN1_STRING_set(ret, NULL, r) == 0)
+    if (ASN1_STRING_set(ret, NULL, r) == 0) {
+        ERR_raise(ERR_LIB_ASN1, ERR_R_ASN1_LIB);
         goto err;
+    }
 
     c2i_ibuf(ret->data, &neg, *pp, len);
 
@@ -318,7 +320,6 @@ ASN1_INTEGER *ossl_c2i_ASN1_INTEGER(ASN1_INTEGER **a, const unsigned char **pp,
         (*a) = ret;
     return ret;
  err:
-    ERR_raise(ERR_LIB_ASN1, ERR_R_MALLOC_FAILURE);
     if (a == NULL || *a != ret)
         ASN1_INTEGER_free(ret);
     return NULL;
@@ -398,9 +399,9 @@ ASN1_INTEGER *d2i_ASN1_UINTEGER(ASN1_INTEGER **a, const unsigned char **pp,
     ASN1_INTEGER *ret = NULL;
     const unsigned char *p;
     unsigned char *s;
-    long len;
+    long len = 0;
     int inf, tag, xclass;
-    int i;
+    int i = 0;
 
     if ((a == NULL) || ((*a) == NULL)) {
         if ((ret = ASN1_INTEGER_new()) == NULL)
@@ -421,15 +422,17 @@ ASN1_INTEGER *d2i_ASN1_UINTEGER(ASN1_INTEGER **a, const unsigned char **pp,
         goto err;
     }
 
+    if (len < 0) {
+        i = ASN1_R_ILLEGAL_NEGATIVE_VALUE;
+        goto err;
+    }
     /*
      * We must OPENSSL_malloc stuff, even for 0 bytes otherwise it signifies
      * a missing NULL parameter.
      */
     s = OPENSSL_malloc((int)len + 1);
-    if (s == NULL) {
-        i = ERR_R_MALLOC_FAILURE;
+    if (s == NULL)
         goto err;
-    }
     ret->type = V_ASN1_INTEGER;
     if (len) {
         if ((*p == 0) && (len != 1)) {
@@ -440,15 +443,14 @@ ASN1_INTEGER *d2i_ASN1_UINTEGER(ASN1_INTEGER **a, const unsigned char **pp,
         p += len;
     }
 
-    OPENSSL_free(ret->data);
-    ret->data = s;
-    ret->length = (int)len;
+    ASN1_STRING_set0(ret, s, (int)len);
     if (a != NULL)
         (*a) = ret;
     *pp = p;
     return ret;
  err:
-    ERR_raise(ERR_LIB_ASN1, i);
+    if (i != 0)
+        ERR_raise(ERR_LIB_ASN1, i);
     if ((a == NULL) || (*a != ret))
         ASN1_INTEGER_free(ret);
     return NULL;
@@ -481,7 +483,7 @@ static ASN1_STRING *bn_to_asn1_string(const BIGNUM *bn, ASN1_STRING *ai,
         len = 1;
 
     if (ASN1_STRING_set(ret, NULL, len) == 0) {
-        ERR_raise(ERR_LIB_ASN1, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_ASN1, ERR_R_ASN1_LIB);
         goto err;
     }
 

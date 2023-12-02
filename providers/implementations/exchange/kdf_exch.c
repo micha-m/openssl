@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2020-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -11,7 +11,10 @@
 #include <openssl/kdf.h>
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
+#include <openssl/err.h>
+#include <openssl/proverr.h>
 #include <openssl/params.h>
+#include "internal/numbers.h"
 #include "prov/implementations.h"
 #include "prov/provider_ctx.h"
 #include "prov/kdfexchange.h"
@@ -92,16 +95,33 @@ static int kdf_derive(void *vpkdfctx, unsigned char *secret, size_t *secretlen,
                       size_t outlen)
 {
     PROV_KDF_CTX *pkdfctx = (PROV_KDF_CTX *)vpkdfctx;
+    size_t kdfsize;
+    int ret;
 
     if (!ossl_prov_is_running())
         return 0;
 
+    kdfsize = EVP_KDF_CTX_get_kdf_size(pkdfctx->kdfctx);
+
     if (secret == NULL) {
-        *secretlen = EVP_KDF_CTX_get_kdf_size(pkdfctx->kdfctx);
+        *secretlen = kdfsize;
         return 1;
     }
 
-    return EVP_KDF_derive(pkdfctx->kdfctx, secret, outlen, NULL);
+    if (kdfsize != SIZE_MAX) {
+        if (outlen < kdfsize) {
+            ERR_raise(ERR_LIB_PROV, PROV_R_OUTPUT_BUFFER_TOO_SMALL);
+            return 0;
+        }
+        outlen = kdfsize;
+    }
+
+    ret = EVP_KDF_derive(pkdfctx->kdfctx, secret, outlen, NULL);
+    if (ret <= 0)
+        return 0;
+
+    *secretlen = outlen;
+    return 1;
 }
 
 static void kdf_freectx(void *vpkdfctx)
@@ -187,7 +207,7 @@ KDF_SETTABLE_CTX_PARAMS(scrypt, "SCRYPT")
         { OSSL_FUNC_KEYEXCH_SET_CTX_PARAMS, (void (*)(void))kdf_set_ctx_params }, \
         { OSSL_FUNC_KEYEXCH_SETTABLE_CTX_PARAMS, \
         (void (*)(void))kdf_##funcname##_settable_ctx_params }, \
-        { 0, NULL } \
+        OSSL_DISPATCH_END \
     };
 
 KDF_KEYEXCH_FUNCTIONS(tls1_prf)

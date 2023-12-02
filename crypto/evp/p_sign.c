@@ -1,5 +1,5 @@
 /*
- * Copyright 1995-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 1995-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -33,25 +33,27 @@ int EVP_SignFinal_ex(EVP_MD_CTX *ctx, unsigned char *sigret,
         EVP_MD_CTX *tmp_ctx = EVP_MD_CTX_new();
 
         if (tmp_ctx == NULL) {
-            ERR_raise(ERR_LIB_EVP, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_EVP, ERR_R_EVP_LIB);
             return 0;
         }
         rv = EVP_MD_CTX_copy_ex(tmp_ctx, ctx);
         if (rv)
             rv = EVP_DigestFinal_ex(tmp_ctx, m, &m_len);
+        else
+            rv = EVP_DigestFinal_ex(ctx, m, &m_len);
         EVP_MD_CTX_free(tmp_ctx);
         if (!rv)
             return 0;
     }
 
-    sltmp = (size_t)EVP_PKEY_size(pkey);
+    sltmp = (size_t)EVP_PKEY_get_size(pkey);
     i = 0;
     pkctx = EVP_PKEY_CTX_new_from_pkey(libctx, pkey, propq);
     if (pkctx == NULL)
         goto err;
     if (EVP_PKEY_sign_init(pkctx) <= 0)
         goto err;
-    if (EVP_PKEY_CTX_set_signature_md(pkctx, EVP_MD_CTX_md(ctx)) <= 0)
+    if (EVP_PKEY_CTX_set_signature_md(pkctx, EVP_MD_CTX_get0_md(ctx)) <= 0)
         goto err;
     if (EVP_PKEY_sign(pkctx, sigret, &sltmp, m, m_len) <= 0)
         goto err;

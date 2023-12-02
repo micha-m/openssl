@@ -60,10 +60,8 @@ int BIO_fd_should_retry(int s);
 static const BIO_METHOD methods_fdp = {
     BIO_TYPE_FD,
     "file descriptor",
-    /* TODO: Convert to new style write function */
     bwrite_conv,
     fd_write,
-    /* TODO: Convert to new style read function */
     bread_conv,
     fd_read,
     fd_puts,
@@ -151,7 +149,7 @@ static long fd_ctrl(BIO *b, int cmd, long num, void *ptr)
     switch (cmd) {
     case BIO_CTRL_RESET:
         num = 0;
-        /* fall thru */
+        /* fall through */
     case BIO_C_FILE_SEEK:
         ret = (long)UP_lseek(b->num, num, 0);
         break;

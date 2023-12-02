@@ -1,5 +1,5 @@
 /*
- * Copyright 2019-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2019-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -50,10 +50,8 @@ static void *rc2_dupctx(void *ctx)
         return NULL;
 
     ret = OPENSSL_malloc(sizeof(*ret));
-    if (ret == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+    if (ret == NULL)
         return NULL;
-    }
     *ret = *in;
 
     return ret;
@@ -117,7 +115,7 @@ static int rc2_get_ctx_params(void *vctx, OSSL_PARAM params[])
         ERR_raise(ERR_LIB_PROV, PROV_R_FAILED_TO_SET_PARAMETER);
         return 0;
     }
-    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_ALG_ID);
+    p = OSSL_PARAM_locate(params, OSSL_CIPHER_PARAM_ALGORITHM_ID_PARAMS);
     if (p != NULL) {
         long num;
         int i;
@@ -130,7 +128,7 @@ static int rc2_get_ctx_params(void *vctx, OSSL_PARAM params[])
             return 0;
         }
         if ((type = ASN1_TYPE_new()) == NULL) {
-            ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_PROV, ERR_R_ASN1_LIB);
             return 0;
         }
 
@@ -139,7 +137,7 @@ static int rc2_get_ctx_params(void *vctx, OSSL_PARAM params[])
         if (!ASN1_TYPE_set_int_octetstring(type, num,
                                            ctx->base.iv, ctx->base.ivlen)) {
             ASN1_TYPE_free(type);
-            ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_PROV, ERR_R_ASN1_LIB);
             return 0;
         }
         /*
@@ -176,7 +174,7 @@ static int rc2_set_ctx_params(void *vctx, const OSSL_PARAM params[])
             return 0;
         }
     }
-    p = OSSL_PARAM_locate_const(params, OSSL_CIPHER_PARAM_ALG_ID);
+    p = OSSL_PARAM_locate_const(params, OSSL_CIPHER_PARAM_ALGORITHM_ID_PARAMS);
     if (p != NULL) {
         ASN1_TYPE *type = NULL;
         long num = 0;
@@ -210,11 +208,13 @@ static int rc2_set_ctx_params(void *vctx, const OSSL_PARAM params[])
 
 CIPHER_DEFAULT_GETTABLE_CTX_PARAMS_START(rc2)
 OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_RC2_KEYBITS, NULL),
+OSSL_PARAM_octet_string(OSSL_CIPHER_PARAM_ALGORITHM_ID_PARAMS, NULL, 0),
 CIPHER_DEFAULT_GETTABLE_CTX_PARAMS_END(rc2)
 
 CIPHER_DEFAULT_SETTABLE_CTX_PARAMS_START(rc2)
 OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_KEYLEN, NULL),
 OSSL_PARAM_size_t(OSSL_CIPHER_PARAM_RC2_KEYBITS, NULL),
+OSSL_PARAM_octet_string(OSSL_CIPHER_PARAM_ALGORITHM_ID_PARAMS, NULL, 0),
 CIPHER_DEFAULT_SETTABLE_CTX_PARAMS_END(rc2)
 
 #define IMPLEMENT_cipher(alg, UCALG, lcmode, UCMODE, flags, kbits, blkbits,    \
@@ -226,7 +226,7 @@ static int alg##_##kbits##_##lcmode##_get_params(OSSL_PARAM params[])          \
                                           flags, kbits, blkbits, ivbits);      \
 }                                                                              \
 static OSSL_FUNC_cipher_newctx_fn alg##_##kbits##_##lcmode##_newctx;           \
-static void * alg##_##kbits##_##lcmode##_newctx(void *provctx)                 \
+static void *alg##_##kbits##_##lcmode##_newctx(void *provctx)                  \
 {                                                                              \
      PROV_##UCALG##_CTX *ctx;                                                  \
      if (!ossl_prov_is_running())                                              \
@@ -263,7 +263,7 @@ const OSSL_DISPATCH ossl_##alg##kbits##lcmode##_functions[] = {                \
       (void (*)(void))rc2_set_ctx_params },                                    \
     { OSSL_FUNC_CIPHER_SETTABLE_CTX_PARAMS,                                    \
      (void (*)(void))rc2_settable_ctx_params },                                \
-    { 0, NULL }                                                                \
+    OSSL_DISPATCH_END                                                          \
 };
 
 /* ossl_rc2128ecb_functions */

@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2015-2020 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2015-2023 The OpenSSL Project Authors. All Rights Reserved.
 #
 # Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
@@ -41,7 +41,7 @@ my @ciphers =
                      |rc2|rc4|seed)/x} @ciphers
     if disabled("legacy");
 
-plan tests => 2 + (scalar @ciphers)*2;
+plan tests => 5 + (scalar @ciphers)*2;
 
  SKIP: {
      skip "Problems getting ciphers...", 1 + scalar(@ciphers)
@@ -52,24 +52,42 @@ plan tests => 2 + (scalar @ciphers)*2;
      }
 
      foreach my $c (@ciphers) {
-	 my %variant = ("$c" => [],
-			"$c base64" => [ "-a" ]);
+         my %variant = ("$c" => [],
+                        "$c base64" => [ "-a" ]);
 
-	 foreach my $t (sort keys %variant) {
-	     my $cipherfile = "$test.$c.cipher";
-	     my $clearfile = "$test.$c.clear";
-	     my @e = ( "$c", "-bufsize", "113", @{$variant{$t}}, "-e", "-k", "test" );
-	     my @d = ( "$c", "-bufsize", "157", @{$variant{$t}}, "-d", "-k", "test" );
-	     if ($c eq "cat") {
-		 $cipherfile = "$test.cipher";
-		 $clearfile = "$test.clear";
-		 @e = ( "enc", @{$variant{$t}}, "-e" );
-		 @d = ( "enc", @{$variant{$t}}, "-d" );
-	     }
+         foreach my $t (sort keys %variant) {
+             my $cipherfile = "$test.$c.cipher";
+             my $clearfile = "$test.$c.clear";
+             my @e = ( "$c", "-bufsize", "113", @{$variant{$t}}, "-e", "-k", "test" );
+             my @d = ( "$c", "-bufsize", "157", @{$variant{$t}}, "-d", "-k", "test" );
+             if ($c eq "cat") {
+                 $cipherfile = "$test.cipher";
+                 $clearfile = "$test.clear";
+                 @e = ( "enc", @{$variant{$t}}, "-e" );
+                 @d = ( "enc", @{$variant{$t}}, "-d" );
+             }
 
-	     ok(run(app([$cmd, @e, @prov, "-in", $test, "-out", $cipherfile]))
-		&& run(app([$cmd, @d, @prov, "-in", $cipherfile, "-out", $clearfile]))
-		&& compare_text($test,$clearfile) == 0, $t);
-	 }
+             ok(run(app([$cmd, @e, @prov, "-in", $test, "-out", $cipherfile]))
+                && run(app([$cmd, @d, @prov, "-in", $cipherfile, "-out", $clearfile]))
+                && compare_text($test,$clearfile) == 0, $t);
+         }
      }
+     ok(run(app([$cmd, "enc", "-in", $test, "-aes256", "-pbkdf2", "-out",
+                 "salted_default.cipher", "-pass", "pass:password"]))
+        && run(app([$cmd, "enc", "-d", "-in", "salted_default.cipher", "-aes256", "-pbkdf2",
+                    "-saltlen", "8", "-out", "salted_default.clear", "-pass", "pass:password"]))
+        && compare_text($test,"salted_default.clear") == 0,
+        "Check that the default salt length of 8 bytes is used for PKDF2");
+
+     ok(!run(app([$cmd, "enc", "-d", "-in", "salted_default.cipher", "-aes256", "-pbkdf2",
+                  "-saltlen", "16", "-out", "salted_fail.clear", "-pass", "pass:password"])),
+        "Check the decrypt fails if the saltlen is incorrect");
+
+     ok(run(app([$cmd, "enc", "-in", $test, "-aes256", "-pbkdf2", "-saltlen", "16",
+                 "-out", "salted.cipher", "-pass", "pass:password"]))
+        && run(app([$cmd, "enc", "-d", "-in", "salted.cipher", "-aes256", "-pbkdf2",
+                    "-saltlen", "16", "-out", "salted.clear", "-pass", "pass:password"]))
+        && compare_text($test,"salted.clear") == 0,
+        "Check that we can still use a salt length of 16 bytes for PKDF2");
+
 }

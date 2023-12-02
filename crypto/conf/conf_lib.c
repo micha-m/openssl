@@ -1,5 +1,5 @@
 /*
- * Copyright 2000-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2000-2022 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -7,7 +7,7 @@
  * https://www.openssl.org/source/license.html
  */
 
-#include "e_os.h"
+#include "internal/e_os.h"
 #include <stdio.h>
 #include <string.h>
 #include "internal/conf.h"
@@ -16,6 +16,7 @@
 #include <openssl/err.h>
 #include <openssl/conf.h>
 #include <openssl/conf_api.h>
+#include "conf_local.h"
 #include <openssl/lhash.h>
 
 static CONF_METHOD *default_CONF_method = NULL;
@@ -187,7 +188,7 @@ CONF *NCONF_new_ex(OSSL_LIB_CTX *libctx, CONF_METHOD *meth)
 
     ret = meth->create(meth);
     if (ret == NULL) {
-        ERR_raise(ERR_LIB_CONF, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_CONF, ERR_R_CONF_LIB);
         return NULL;
     }
     ret->libctx = libctx;
@@ -212,6 +213,38 @@ void NCONF_free_data(CONF *conf)
     if (conf == NULL)
         return;
     conf->meth->destroy_data(conf);
+}
+
+OSSL_LIB_CTX *NCONF_get0_libctx(const CONF *conf)
+{
+    return conf->libctx;
+}
+
+typedef STACK_OF(OPENSSL_CSTRING) SECTION_NAMES;
+
+IMPLEMENT_LHASH_DOALL_ARG_CONST(CONF_VALUE, SECTION_NAMES);
+
+static void collect_section_name(const CONF_VALUE *v, SECTION_NAMES *names)
+{
+    /* A section is a CONF_VALUE with name == NULL */
+    if (v->name == NULL)
+        sk_OPENSSL_CSTRING_push(names, v->section);
+}
+
+static int section_name_cmp(OPENSSL_CSTRING const *a, OPENSSL_CSTRING const *b)
+{
+    return strcmp(*a, *b);
+}
+
+STACK_OF(OPENSSL_CSTRING) *NCONF_get_section_names(const CONF *cnf)
+{
+    SECTION_NAMES *names;
+
+    if ((names = sk_OPENSSL_CSTRING_new(section_name_cmp)) == NULL)
+        return NULL;
+    lh_CONF_VALUE_doall_SECTION_NAMES(cnf->data, collect_section_name, names);
+    sk_OPENSSL_CSTRING_sort(names);
+    return names;
 }
 
 int NCONF_load(CONF *conf, const char *file, long *eline)
@@ -388,6 +421,12 @@ OPENSSL_INIT_SETTINGS *OPENSSL_INIT_new(void)
 
 
 #ifndef OPENSSL_NO_STDIO
+/*
+ * If CRYPTO_set_mem_functions is called after this, then
+ * memory allocation and deallocation in this function can
+ * become disjointed. Avoid this by always using standard
+ * strdup & free instead of OPENSSL_strdup & OPENSSL_free.
+ */
 int OPENSSL_INIT_set_config_filename(OPENSSL_INIT_SETTINGS *settings,
                                      const char *filename)
 {
@@ -411,6 +450,12 @@ void OPENSSL_INIT_set_config_file_flags(OPENSSL_INIT_SETTINGS *settings,
     settings->flags = flags;
 }
 
+/*
+ * If CRYPTO_set_mem_functions is called after this, then
+ * memory allocation and deallocation in this function can
+ * become disjointed. Avoid this by always using standard
+ * strdup & free instead of OPENSSL_strdup & OPENSSL_free.
+ */
 int OPENSSL_INIT_set_config_appname(OPENSSL_INIT_SETTINGS *settings,
                                     const char *appname)
 {

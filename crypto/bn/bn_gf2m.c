@@ -1,5 +1,5 @@
 /*
- * Copyright 2002-2020 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2002-2021 The OpenSSL Project Authors. All Rights Reserved.
  * Copyright (c) 2002, Oracle and/or its affiliates. All rights reserved
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
@@ -474,10 +474,8 @@ int BN_GF2m_mod_mul(BIGNUM *r, const BIGNUM *a, const BIGNUM *b,
     bn_check_top(p);
 
     arr = OPENSSL_malloc(sizeof(*arr) * max);
-    if (arr == NULL) {
-        ERR_raise(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+    if (arr == NULL)
         return 0;
-    }
     ret = BN_GF2m_poly2arr(p, arr, max);
     if (!ret || ret > max) {
         ERR_raise(ERR_LIB_BN, BN_R_INVALID_LENGTH);
@@ -536,10 +534,8 @@ int BN_GF2m_mod_sqr(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, BN_CTX *ctx)
     bn_check_top(p);
 
     arr = OPENSSL_malloc(sizeof(*arr) * max);
-    if (arr == NULL) {
-        ERR_raise(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+    if (arr == NULL)
         return 0;
-    }
     ret = BN_GF2m_poly2arr(p, arr, max);
     if (!ret || ret > max) {
         ERR_raise(ERR_LIB_BN, BN_R_INVALID_LENGTH);
@@ -715,8 +711,8 @@ static int BN_GF2m_mod_inv_vartime(BIGNUM *r, const BIGNUM *a,
     ret = 1;
 
  err:
-# ifdef BN_DEBUG                /* BN_CTX_end would complain about the
-                                 * expanded form */
+# ifdef BN_DEBUG
+    /* BN_CTX_end would complain about the expanded form */
     bn_correct_top(c);
     bn_correct_top(u);
     bn_correct_top(v);
@@ -742,7 +738,7 @@ int BN_GF2m_mod_inv(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, BN_CTX *ctx)
     /* generate blinding value */
     do {
         if (!BN_priv_rand_ex(b, BN_num_bits(p) - 1,
-                             BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY, ctx))
+                             BN_RAND_TOP_ANY, BN_RAND_BOTTOM_ANY, 0, ctx))
             goto err;
     } while (BN_is_zero(b));
 
@@ -915,10 +911,8 @@ int BN_GF2m_mod_exp(BIGNUM *r, const BIGNUM *a, const BIGNUM *b,
     bn_check_top(p);
 
     arr = OPENSSL_malloc(sizeof(*arr) * max);
-    if (arr == NULL) {
-        ERR_raise(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+    if (arr == NULL)
         return 0;
-    }
     ret = BN_GF2m_poly2arr(p, arr, max);
     if (!ret || ret > max) {
         ERR_raise(ERR_LIB_BN, BN_R_INVALID_LENGTH);
@@ -979,10 +973,8 @@ int BN_GF2m_mod_sqrt(BIGNUM *r, const BIGNUM *a, const BIGNUM *p, BN_CTX *ctx)
     bn_check_top(p);
 
     arr = OPENSSL_malloc(sizeof(*arr) * max);
-    if (arr == NULL) {
-        ERR_raise(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+    if (arr == NULL)
         return 0;
-    }
     ret = BN_GF2m_poly2arr(p, arr, max);
     if (!ret || ret > max) {
         ERR_raise(ERR_LIB_BN, BN_R_INVALID_LENGTH);
@@ -1051,7 +1043,7 @@ int BN_GF2m_mod_solve_quad_arr(BIGNUM *r, const BIGNUM *a_, const int p[],
             goto err;
         do {
             if (!BN_priv_rand_ex(rho, p[0], BN_RAND_TOP_ONE, BN_RAND_BOTTOM_ANY,
-                                 ctx))
+                                 0, ctx))
                 goto err;
             if (!BN_GF2m_mod_arr(rho, rho, p))
                 goto err;
@@ -1115,10 +1107,8 @@ int BN_GF2m_mod_solve_quad(BIGNUM *r, const BIGNUM *a, const BIGNUM *p,
     bn_check_top(p);
 
     arr = OPENSSL_malloc(sizeof(*arr) * max);
-    if (arr == NULL) {
-        ERR_raise(ERR_LIB_BN, ERR_R_MALLOC_FAILURE);
+    if (arr == NULL)
         goto err;
-    }
     ret = BN_GF2m_poly2arr(p, arr, max);
     if (!ret || ret > max) {
         ERR_raise(ERR_LIB_BN, BN_R_INVALID_LENGTH);

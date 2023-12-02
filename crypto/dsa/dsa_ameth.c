@@ -1,5 +1,5 @@
 /*
- * Copyright 2006-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2006-2022 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -54,7 +54,7 @@ static int dsa_pub_decode(EVP_PKEY *pkey, const X509_PUBKEY *pubkey)
 
     } else if ((ptype == V_ASN1_NULL) || (ptype == V_ASN1_UNDEF)) {
         if ((dsa = DSA_new()) == NULL) {
-            ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_DSA, ERR_R_DSA_LIB);
             goto err;
         }
     } else {
@@ -101,12 +101,12 @@ static int dsa_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey)
         && dsa->params.g != NULL) {
         str = ASN1_STRING_new();
         if (str == NULL) {
-            ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_DSA, ERR_R_ASN1_LIB);
             goto err;
         }
         str->length = i2d_DSAparams(dsa, &str->data);
         if (str->length <= 0) {
-            ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+            ERR_raise(ERR_LIB_DSA, ERR_R_ASN1_LIB);
             goto err;
         }
         ptype = V_ASN1_SEQUENCE;
@@ -116,7 +116,7 @@ static int dsa_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey)
     pubint = BN_to_ASN1_INTEGER(dsa->pub_key, NULL);
 
     if (pubint == NULL) {
-        ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DSA, ERR_R_ASN1_LIB);
         goto err;
     }
 
@@ -124,7 +124,7 @@ static int dsa_pub_encode(X509_PUBKEY *pk, const EVP_PKEY *pkey)
     ASN1_INTEGER_free(pubint);
 
     if (penclen <= 0) {
-        ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DSA, ERR_R_ASN1_LIB);
         goto err;
     }
 
@@ -175,13 +175,13 @@ static int dsa_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey)
     params = ASN1_STRING_new();
 
     if (params == NULL) {
-        ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DSA, ERR_R_ASN1_LIB);
         goto err;
     }
 
     params->length = i2d_DSAparams(pkey->pkey.dsa, &params->data);
     if (params->length <= 0) {
-        ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DSA, ERR_R_ASN1_LIB);
         goto err;
     }
     params->type = V_ASN1_SEQUENCE;
@@ -197,18 +197,21 @@ static int dsa_priv_encode(PKCS8_PRIV_KEY_INFO *p8, const EVP_PKEY *pkey)
     dplen = i2d_ASN1_INTEGER(prkey, &dp);
 
     ASN1_STRING_clear_free(prkey);
-    prkey = NULL;
+
+    if (dplen <= 0) {
+        ERR_raise(ERR_LIB_DSA, DSA_R_BN_ERROR);
+        goto err;
+    }
 
     if (!PKCS8_pkey_set0(p8, OBJ_nid2obj(NID_dsa), 0,
-                         V_ASN1_SEQUENCE, params, dp, dplen))
+                         V_ASN1_SEQUENCE, params, dp, dplen)) {
+        OPENSSL_clear_free(dp, dplen);
         goto err;
-
+    }
     return 1;
 
  err:
-    OPENSSL_free(dp);
     ASN1_STRING_free(params);
-    ASN1_STRING_clear_free(prkey);
     return 0;
 }
 
@@ -424,8 +427,8 @@ static size_t dsa_pkey_dirty_cnt(const EVP_PKEY *pkey)
 }
 
 static int dsa_pkey_export_to(const EVP_PKEY *from, void *to_keydata,
-                              EVP_KEYMGMT *to_keymgmt, OSSL_LIB_CTX *libctx,
-                              const char *propq)
+                              OSSL_FUNC_keymgmt_import_fn *importer,
+                              OSSL_LIB_CTX *libctx, const char *propq)
 {
     DSA *dsa = from->pkey.dsa;
     OSSL_PARAM_BLD *tmpl;
@@ -435,13 +438,6 @@ static int dsa_pkey_export_to(const EVP_PKEY *from, void *to_keydata,
     OSSL_PARAM *params;
     int selection = 0;
     int rv = 0;
-
-    /*
-     * If the DSA method is foreign, then we can't be sure of anything, and
-     * can therefore not export or pretend to export.
-     */
-    if (DSA_get_method(dsa) != DSA_OpenSSL())
-        return 0;
 
     if (p == NULL || q == NULL || g == NULL)
         return 0;
@@ -472,7 +468,7 @@ static int dsa_pkey_export_to(const EVP_PKEY *from, void *to_keydata,
         goto err;
 
     /* We export, the provider imports */
-    rv = evp_keymgmt_import(to_keymgmt, to_keydata, selection, params);
+    rv = importer(to_keydata, selection, params);
 
     OSSL_PARAM_free(params);
  err:
@@ -487,56 +483,17 @@ static int dsa_pkey_import_from(const OSSL_PARAM params[], void *vpctx)
     DSA *dsa = ossl_dsa_new(pctx->libctx);
 
     if (dsa == NULL) {
-        ERR_raise(ERR_LIB_DSA, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_DSA, ERR_R_DSA_LIB);
         return 0;
     }
 
     if (!ossl_dsa_ffc_params_fromdata(dsa, params)
-        || !ossl_dsa_key_fromdata(dsa, params)
+        || !ossl_dsa_key_fromdata(dsa, params, 1)
         || !EVP_PKEY_assign_DSA(pkey, dsa)) {
         DSA_free(dsa);
         return 0;
     }
     return 1;
-}
-
-static ossl_inline int dsa_bn_dup_check(BIGNUM **out, const BIGNUM *f)
-{
-    if (f != NULL && (*out = BN_dup(f)) == NULL)
-        return 0;
-    return 1;
-}
-
-static DSA *dsa_dup(const DSA *dsa)
-{
-    DSA *dupkey = NULL;
-
-    /* Do not try to duplicate foreign DSA keys */
-    if (DSA_get_method((DSA *)dsa) != DSA_OpenSSL())
-        return NULL;
-
-    if ((dupkey = ossl_dsa_new(dsa->libctx)) == NULL)
-        return NULL;
-
-    if (!ossl_ffc_params_copy(&dupkey->params, &dsa->params))
-        goto err;
-
-    dupkey->flags = dsa->flags;
-
-    if (!dsa_bn_dup_check(&dupkey->pub_key, dsa->pub_key))
-        goto err;
-    if (!dsa_bn_dup_check(&dupkey->priv_key, dsa->priv_key))
-        goto err;
-
-    if (!CRYPTO_dup_ex_data(CRYPTO_EX_INDEX_DSA,
-                            &dupkey->ex_data, &dsa->ex_data))
-        goto err;
-
-    return dupkey;
-
- err:
-    DSA_free(dupkey);
-    return NULL;
 }
 
 static int dsa_pkey_copy(EVP_PKEY *to, EVP_PKEY *from)
@@ -546,7 +503,7 @@ static int dsa_pkey_copy(EVP_PKEY *to, EVP_PKEY *from)
     int ret;
 
     if (dsa != NULL) {
-        dupkey = dsa_dup(dsa);
+        dupkey = ossl_dsa_dup(dsa, OSSL_KEYMGMT_SELECT_ALL);
         if (dupkey == NULL)
             return 0;
     }

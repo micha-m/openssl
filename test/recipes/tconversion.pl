@@ -1,5 +1,5 @@
 #! /usr/bin/env perl
-# Copyright 2015-2021 The OpenSSL Project Authors. All Rights Reserved.
+# Copyright 2015-2023 The OpenSSL Project Authors. All Rights Reserved.
 #
 # Licensed under the Apache License 2.0 (the "License").  You may not use
 # this file except in compliance with the License.  You can obtain a copy
@@ -19,6 +19,7 @@ my %conversionforms = (
     # specific test types as key.
     "*"		=> [ "d", "p" ],
     "msb"	=> [ "d", "p", "msblob" ],
+    "pvk"	=> [ "d", "p", "pvk" ],
     );
 sub tconversion {
     my %opts = @_;
@@ -45,8 +46,9 @@ sub tconversion {
 	+ $n			# initial conversions from p to all forms (A)
 	+ $n*$n			# conversion from result of A to all forms (B)
 	+ 1			# comparing original test file to p form of A
-	+ $n*($n-1);		# comparing first conversion to each fom in A with B
+	+ $n*($n-1);		# comparing first conversion to each form in A with B
     $totaltests-- if ($testtype eq "p7d"); # no comparison of original test file
+    $totaltests -= $n if ($testtype eq "pvk"); # no comparisons of the pvk form
     plan tests => $totaltests;
 
     my @cmd = ("openssl", @openssl_args);
@@ -91,7 +93,7 @@ sub tconversion {
       }
 
       foreach my $to (@conversionforms) {
-	  next if $to eq "d";
+	  next if $to eq "d" or $to eq "pvk";
 	  foreach my $from (@conversionforms) {
 	      is(cmp_text("$prefix-f.$to", "$prefix-ff.$from$to"), 0,
 		 "comparing $to to $from$to");
@@ -114,6 +116,7 @@ sub file_contains {
     open(DATA, $_) or return 0;
     $_= join('', <DATA>);
     close(DATA);
+    s/\s+/ /g; # take multiple whitespace (including newline) as single space
     return m/$pattern/ ? 1 : 0;
 }
 
@@ -125,8 +128,26 @@ sub cert_contains {
     my $out = "cert_contains.out";
     run(app(["openssl", "x509", "-noout", "-text", "-in", $cert, "-out", $out]));
     is(file_contains($out, $pattern), $expected, ($name ? "$name: " : "").
-       "$cert should ".($expected ? "" : "not ")."contain $pattern");
+       "$cert should ".($expected ? "" : "not ")."contain: \"$pattern\"");
     # not unlinking $out
+}
+
+sub has_version {
+    my $cert = shift @_;
+    my $expect = shift @_;
+    cert_contains($cert, "Version: $expect", 1);
+}
+
+sub has_SKID {
+    my $cert = shift @_;
+    my $expect = shift @_;
+    cert_contains($cert, "Subject Key Identifier", $expect);
+}
+
+sub has_AKID {
+    my $cert = shift @_;
+    my $expect = shift @_;
+    cert_contains($cert, "Authority Key Identifier", $expect);
 }
 
 sub uniq (@) {

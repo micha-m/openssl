@@ -1,5 +1,5 @@
 /*
- * Copyright 2020-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2020-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -9,8 +9,6 @@
 
 #include <assert.h>
 #include <string.h>
-/* For strcasecmp on Windows */
-#include "e_os.h"
 #include <openssl/core_dispatch.h>
 #include <openssl/core_names.h>
 #include <openssl/params.h>
@@ -19,11 +17,12 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include "internal/param_build_set.h"
-#include "openssl/param_build.h"
+#include <openssl/param_build.h>
 #include "crypto/ecx.h"
 #include "prov/implementations.h"
 #include "prov/providercommon.h"
 #include "prov/provider_ctx.h"
+#include "prov/ecx.h"
 #ifdef S390X_EC_ASM
 # include "s390x_arch.h"
 # include <openssl/sha.h>   /* For SHA512_DIGEST_LENGTH */
@@ -71,6 +70,7 @@ static OSSL_FUNC_keymgmt_import_fn ecx_import;
 static OSSL_FUNC_keymgmt_import_types_fn ecx_imexport_types;
 static OSSL_FUNC_keymgmt_export_fn ecx_export;
 static OSSL_FUNC_keymgmt_export_types_fn ecx_imexport_types;
+static OSSL_FUNC_keymgmt_dup_fn ecx_dup;
 
 #define ECX_POSSIBLE_SELECTIONS (OSSL_KEYMGMT_SELECT_KEYPAIR)
 
@@ -79,6 +79,8 @@ struct ecx_gen_ctx {
     char *propq;
     ECX_KEY_TYPE type;
     int selection;
+    unsigned char *dhkem_ikm;
+    size_t dhkem_ikmlen;
 };
 
 #ifdef S390X_EC_ASM
@@ -152,24 +154,39 @@ static int ecx_match(const void *keydata1, const void *keydata2, int selection)
 
     if ((selection & OSSL_KEYMGMT_SELECT_DOMAIN_PARAMETERS) != 0)
         ok = ok && key1->type == key2->type;
-    if ((selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0) {
-        if ((key1->privkey == NULL && key2->privkey != NULL)
-                || (key1->privkey != NULL && key2->privkey == NULL)
-                || key1->type != key2->type)
-            ok = 0;
-        else
-            ok = ok && (key1->privkey == NULL /* implies key2->privkey == NULL */
-                        || CRYPTO_memcmp(key1->privkey, key2->privkey,
-                                         key1->keylen) == 0);
-    }
-    if ((selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0) {
-        if (key1->haspubkey != key2->haspubkey
-                || key1->type != key2->type)
-            ok = 0;
-        else
-            ok = ok && (key1->haspubkey == 0 /* implies key2->haspubkey == 0 */
-                        || CRYPTO_memcmp(key1->pubkey, key2->pubkey,
-                                         key1->keylen) == 0);
+    if ((selection & OSSL_KEYMGMT_SELECT_KEYPAIR) != 0) {
+        int key_checked = 0;
+
+        if ((selection & OSSL_KEYMGMT_SELECT_PUBLIC_KEY) != 0) {
+            const unsigned char *pa = key1->haspubkey ? key1->pubkey : NULL;
+            const unsigned char *pb = key2->haspubkey ? key2->pubkey : NULL;
+            size_t pal = key1->keylen;
+            size_t pbl = key2->keylen;
+
+            if (pa != NULL && pb != NULL) {
+                ok = ok
+                    && key1->type == key2->type
+                    && pal == pbl
+                    && CRYPTO_memcmp(pa, pb, pal) == 0;
+                key_checked = 1;
+            }
+        }
+        if (!key_checked
+            && (selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0) {
+            const unsigned char *pa = key1->privkey;
+            const unsigned char *pb = key2->privkey;
+            size_t pal = key1->keylen;
+            size_t pbl = key2->keylen;
+
+            if (pa != NULL && pb != NULL) {
+                ok = ok
+                    && key1->type == key2->type
+                    && pal == pbl
+                    && CRYPTO_memcmp(pa, pb, pal) == 0;
+                key_checked = 1;
+            }
+        }
+        ok = ok && key_checked;
     }
     return ok;
 }
@@ -178,7 +195,7 @@ static int ecx_import(void *keydata, int selection, const OSSL_PARAM params[])
 {
     ECX_KEY *key = keydata;
     int ok = 1;
-    int include_private = 0;
+    int include_private;
 
     if (!ossl_prov_is_running() || key == NULL)
         return 0;
@@ -186,14 +203,14 @@ static int ecx_import(void *keydata, int selection, const OSSL_PARAM params[])
     if ((selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
         return 0;
 
-    include_private = ((selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0);
+    include_private = selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY ? 1 : 0;
     ok = ok && ossl_ecx_key_fromdata(key, params, include_private);
 
     return ok;
 }
 
 static int key_to_params(ECX_KEY *key, OSSL_PARAM_BLD *tmpl,
-                         OSSL_PARAM params[])
+                         OSSL_PARAM params[], int include_private)
 {
     if (key == NULL)
         return 0;
@@ -203,7 +220,8 @@ static int key_to_params(ECX_KEY *key, OSSL_PARAM_BLD *tmpl,
                                            key->pubkey, key->keylen))
         return 0;
 
-    if (key->privkey != NULL
+    if (include_private
+        && key->privkey != NULL
         && !ossl_param_build_set_octet_string(tmpl, params,
                                               OSSL_PKEY_PARAM_PRIV_KEY,
                                               key->privkey, key->keylen))
@@ -223,13 +241,19 @@ static int ecx_export(void *keydata, int selection, OSSL_CALLBACK *param_cb,
     if (!ossl_prov_is_running() || key == NULL)
         return 0;
 
+    if ((selection & OSSL_KEYMGMT_SELECT_KEYPAIR) == 0)
+        return 0;
+
     tmpl = OSSL_PARAM_BLD_new();
     if (tmpl == NULL)
         return 0;
 
-    if ((selection & OSSL_KEYMGMT_SELECT_KEYPAIR) != 0
-         && !key_to_params(key, tmpl, NULL))
-        goto err;
+    if ((selection & OSSL_KEYMGMT_SELECT_KEYPAIR) != 0) {
+        int include_private = ((selection & OSSL_KEYMGMT_SELECT_PRIVATE_KEY) != 0);
+
+        if (!key_to_params(key, tmpl, NULL, include_private))
+            goto err;
+    }
 
     params = OSSL_PARAM_BLD_to_param(tmpl);
     if (params == NULL)
@@ -279,7 +303,7 @@ static int ecx_get_params(void *key, OSSL_PARAM params[], int bits, int secbits,
             return 0;
     }
 
-    return key_to_params(ecx, NULL, params);
+    return key_to_params(ecx, NULL, params, 1);
 }
 
 static int ed_get_params(void *key, OSSL_PARAM params[])
@@ -308,14 +332,14 @@ static int x448_get_params(void *key, OSSL_PARAM params[])
 static int ed25519_get_params(void *key, OSSL_PARAM params[])
 {
     return ecx_get_params(key, params, ED25519_BITS, ED25519_SECURITY_BITS,
-                          ED25519_KEYLEN)
+                          ED25519_SIGSIZE)
         && ed_get_params(key, params);
 }
 
 static int ed448_get_params(void *key, OSSL_PARAM params[])
 {
     return ecx_get_params(key, params, ED448_BITS, ED448_SECURITY_BITS,
-                          ED448_KEYLEN)
+                          ED448_SIGSIZE)
         && ed_get_params(key, params);
 }
 
@@ -363,10 +387,8 @@ static int set_property_query(ECX_KEY *ecxkey, const char *propq)
     ecxkey->propq = NULL;
     if (propq != NULL) {
         ecxkey->propq = OPENSSL_strdup(propq);
-        if (ecxkey->propq == NULL) {
-            ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        if (ecxkey->propq == NULL)
             return 0;
-        }
     }
     return 1;
 }
@@ -526,7 +548,7 @@ static int ecx_gen_set_params(void *genctx, const OSSL_PARAM params[])
         }
         if (p->data_type != OSSL_PARAM_UTF8_STRING
                 || groupname == NULL
-                || strcasecmp(p->data, groupname) != 0) {
+                || OPENSSL_strcasecmp(p->data, groupname) != 0) {
             ERR_raise(ERR_LIB_PROV, ERR_R_PASSED_INVALID_ARGUMENT);
             return 0;
         }
@@ -540,6 +562,16 @@ static int ecx_gen_set_params(void *genctx, const OSSL_PARAM params[])
         if (gctx->propq == NULL)
             return 0;
     }
+    p = OSSL_PARAM_locate_const(params, OSSL_PKEY_PARAM_DHKEM_IKM);
+    if (p != NULL) {
+        if (p->data_size != 0 && p->data != NULL) {
+            OPENSSL_free(gctx->dhkem_ikm);
+            gctx->dhkem_ikm = NULL;
+            if (!OSSL_PARAM_get_octet_string(p, (void **)&gctx->dhkem_ikm, 0,
+                                             &gctx->dhkem_ikmlen))
+                return 0;
+        }
+    }
 
     return 1;
 }
@@ -550,6 +582,7 @@ static const OSSL_PARAM *ecx_gen_settable_params(ossl_unused void *genctx,
     static OSSL_PARAM settable[] = {
         OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, NULL, 0),
         OSSL_PARAM_utf8_string(OSSL_KDF_PARAM_PROPERTIES, NULL, 0),
+        OSSL_PARAM_octet_string(OSSL_PKEY_PARAM_DHKEM_IKM, NULL, 0),
         OSSL_PARAM_END
     };
     return settable;
@@ -564,7 +597,7 @@ static void *ecx_gen(struct ecx_gen_ctx *gctx)
         return NULL;
     if ((key = ossl_ecx_key_new(gctx->libctx, gctx->type, 0,
                                 gctx->propq)) == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         return NULL;
     }
 
@@ -573,11 +606,24 @@ static void *ecx_gen(struct ecx_gen_ctx *gctx)
         return key;
 
     if ((privkey = ossl_ecx_key_allocate_privkey(key)) == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         goto err;
     }
-    if (RAND_priv_bytes_ex(gctx->libctx, privkey, key->keylen) <= 0)
-        goto err;
+#ifndef FIPS_MODULE
+    if (gctx->dhkem_ikm != NULL && gctx->dhkem_ikmlen != 0) {
+        if (gctx->type == ECX_KEY_TYPE_ED25519
+                || gctx->type == ECX_KEY_TYPE_ED448)
+            goto err;
+        if (!ossl_ecx_dhkem_derive_private(key, privkey,
+                                           gctx->dhkem_ikm, gctx->dhkem_ikmlen))
+            goto err;
+    } else
+#endif
+    {
+        if (RAND_priv_bytes_ex(gctx->libctx, privkey, key->keylen, 0) <= 0)
+            goto err;
+    }
+
     switch (gctx->type) {
     case ECX_KEY_TYPE_X25519:
         privkey[0] &= 248;
@@ -673,6 +719,7 @@ static void ecx_gen_cleanup(void *genctx)
 {
     struct ecx_gen_ctx *gctx = genctx;
 
+    OPENSSL_clear_free(gctx->dhkem_ikm, gctx->dhkem_ikmlen);
     OPENSSL_free(gctx->propq);
     OPENSSL_free(gctx);
 }
@@ -688,6 +735,13 @@ void *ecx_load(const void *reference, size_t reference_sz)
         *(ECX_KEY **)reference = NULL;
         return key;
     }
+    return NULL;
+}
+
+static void *ecx_dup(const void *keydata_from, int selection)
+{
+    if (ossl_prov_is_running())
+        return ossl_ecx_key_dup(keydata_from, selection);
     return NULL;
 }
 
@@ -788,7 +842,8 @@ static int ed448_validate(const void *keydata, int selection, int checktype)
         { OSSL_FUNC_KEYMGMT_GEN, (void (*)(void))alg##_gen }, \
         { OSSL_FUNC_KEYMGMT_GEN_CLEANUP, (void (*)(void))ecx_gen_cleanup }, \
         { OSSL_FUNC_KEYMGMT_LOAD, (void (*)(void))ecx_load }, \
-        { 0, NULL } \
+        { OSSL_FUNC_KEYMGMT_DUP, (void (*)(void))ecx_dup }, \
+        OSSL_DISPATCH_END \
     };
 
 MAKE_KEYMGMT_FUNCTIONS(x25519)
@@ -811,7 +866,7 @@ static void *s390x_ecx_keygen25519(struct ecx_gen_ctx *gctx)
     unsigned char *privkey = NULL, *pubkey;
 
     if (key == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         goto err;
     }
 
@@ -823,12 +878,23 @@ static void *s390x_ecx_keygen25519(struct ecx_gen_ctx *gctx)
 
     privkey = ossl_ecx_key_allocate_privkey(key);
     if (privkey == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         goto err;
     }
 
-    if (RAND_priv_bytes_ex(gctx->libctx, privkey, X25519_KEYLEN) <= 0)
-        goto err;
+#ifndef FIPS_MODULE
+    if (gctx->dhkem_ikm != NULL && gctx->dhkem_ikmlen != 0) {
+        if (gctx->type != ECX_KEY_TYPE_X25519)
+            goto err;
+        if (!ossl_ecx_dhkem_derive_private(key, privkey,
+                                           gctx->dhkem_ikm, gctx->dhkem_ikmlen))
+            goto err;
+    } else
+#endif
+    {
+        if (RAND_priv_bytes_ex(gctx->libctx, privkey, X25519_KEYLEN, 0) <= 0)
+            goto err;
+    }
 
     privkey[0] &= 248;
     privkey[31] &= 127;
@@ -857,7 +923,7 @@ static void *s390x_ecx_keygen448(struct ecx_gen_ctx *gctx)
     unsigned char *privkey = NULL, *pubkey;
 
     if (key == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         goto err;
     }
 
@@ -869,12 +935,23 @@ static void *s390x_ecx_keygen448(struct ecx_gen_ctx *gctx)
 
     privkey = ossl_ecx_key_allocate_privkey(key);
     if (privkey == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         goto err;
     }
 
-    if (RAND_priv_bytes_ex(gctx->libctx, privkey, X448_KEYLEN) <= 0)
-        goto err;
+#ifndef FIPS_MODULE
+    if (gctx->dhkem_ikm != NULL && gctx->dhkem_ikmlen != 0) {
+        if (gctx->type != ECX_KEY_TYPE_X448)
+            goto err;
+        if (!ossl_ecx_dhkem_derive_private(key, privkey,
+                                           gctx->dhkem_ikm, gctx->dhkem_ikmlen))
+            goto err;
+    } else
+#endif
+    {
+        if (RAND_priv_bytes_ex(gctx->libctx, privkey, X448_KEYLEN, 0) <= 0)
+            goto err;
+    }
 
     privkey[0] &= 252;
     privkey[55] |= 128;
@@ -909,7 +986,7 @@ static void *s390x_ecd_keygen25519(struct ecx_gen_ctx *gctx)
     int j;
 
     if (key == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         goto err;
     }
 
@@ -921,11 +998,11 @@ static void *s390x_ecd_keygen25519(struct ecx_gen_ctx *gctx)
 
     privkey = ossl_ecx_key_allocate_privkey(key);
     if (privkey == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         goto err;
     }
 
-    if (RAND_priv_bytes_ex(gctx->libctx, privkey, ED25519_KEYLEN) <= 0)
+    if (RAND_priv_bytes_ex(gctx->libctx, privkey, ED25519_KEYLEN, 0) <= 0)
         goto err;
 
     sha = EVP_MD_fetch(gctx->libctx, "SHA512", gctx->propq);
@@ -976,7 +1053,7 @@ static void *s390x_ecd_keygen448(struct ecx_gen_ctx *gctx)
     EVP_MD *shake = NULL;
 
     if (key == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         goto err;
     }
 
@@ -988,14 +1065,14 @@ static void *s390x_ecd_keygen448(struct ecx_gen_ctx *gctx)
 
     privkey = ossl_ecx_key_allocate_privkey(key);
     if (privkey == NULL) {
-        ERR_raise(ERR_LIB_PROV, ERR_R_MALLOC_FAILURE);
+        ERR_raise(ERR_LIB_PROV, ERR_R_EC_LIB);
         goto err;
     }
 
     shake = EVP_MD_fetch(gctx->libctx, "SHAKE256", gctx->propq);
     if (shake == NULL)
         goto err;
-    if (RAND_priv_bytes_ex(gctx->libctx, privkey, ED448_KEYLEN) <= 0)
+    if (RAND_priv_bytes_ex(gctx->libctx, privkey, ED448_KEYLEN, 0) <= 0)
         goto err;
 
     hashctx = EVP_MD_CTX_new();

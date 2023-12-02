@@ -324,6 +324,15 @@ static int afalg_fin_cipher_aio(afalg_aio *aio, int sfd, unsigned char *buf,
         }
         if (eval > 0) {
 
+#ifdef OSSL_SANITIZE_MEMORY
+            /*
+             * In a memory sanitiser build, the changes to memory made by the
+             * system call aren't reliably detected.  By initialising the
+             * memory here, the sanitiser is told that they are okay.
+             */
+            memset(events, 0, sizeof(events));
+#endif
+
             /* Get results of AIO read */
             r = io_getevents(aio->aio_ctx, 1, MAX_INFLIGHTS,
                              events, &timeout);
@@ -346,6 +355,18 @@ static int afalg_fin_cipher_aio(afalg_aio *aio, int sfd, unsigned char *buf,
                         }
                         continue;
                     } else {
+                        char strbuf[32];
+                        /*
+                         * sometimes __s64 is defined as long long int
+                         * but on some archs ( like mips64 or powerpc64 ) it's just long int
+                         *
+                         * to be able to use BIO_snprintf() with %lld without warnings
+                         * copy events[0].res to an long long int variable
+                         *
+                         * because long long int should always be at least 64 bit this should work
+                         */
+                        long long int op_ret = events[0].res;
+
                         /*
                          * Retries exceed for -EBUSY or unrecoverable error
                          * condition for this instance of operation.
@@ -353,6 +374,17 @@ static int afalg_fin_cipher_aio(afalg_aio *aio, int sfd, unsigned char *buf,
                         ALG_WARN
                             ("%s(%d): Crypto Operation failed with code %lld\n",
                              __FILE__, __LINE__, events[0].res);
+                        BIO_snprintf(strbuf, sizeof(strbuf), "%lld", op_ret);
+                        switch (events[0].res) {
+                        case -ENOMEM:
+                            AFALGerr(0, AFALG_R_KERNEL_OP_FAILED);
+                            ERR_add_error_data(3, "-ENOMEM ( code ", strbuf, " )");
+                            break;
+                        default:
+                            AFALGerr(0, AFALG_R_KERNEL_OP_FAILED);
+                            ERR_add_error_data(2, "code ", strbuf);
+                            break;
+                        }
                         return 0;
                     }
                 }
@@ -544,7 +576,7 @@ static int afalg_cipher_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
                              const unsigned char *iv, int enc)
 {
     int ciphertype;
-    int ret;
+    int ret, len;
     afalg_ctx *actx;
     const char *ciphername;
 
@@ -553,7 +585,7 @@ static int afalg_cipher_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
         return 0;
     }
 
-    if (EVP_CIPHER_CTX_cipher(ctx) == NULL) {
+    if (EVP_CIPHER_CTX_get0_cipher(ctx) == NULL) {
         ALG_WARN("%s(%d): Cipher object NULL\n", __FILE__, __LINE__);
         return 0;
     }
@@ -564,7 +596,7 @@ static int afalg_cipher_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
         return 0;
     }
 
-    ciphertype = EVP_CIPHER_CTX_nid(ctx);
+    ciphertype = EVP_CIPHER_CTX_get_nid(ctx);
     switch (ciphertype) {
     case NID_aes_128_cbc:
     case NID_aes_192_cbc:
@@ -577,9 +609,9 @@ static int afalg_cipher_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
         return 0;
     }
 
-    if (ALG_AES_IV_LEN != EVP_CIPHER_CTX_iv_length(ctx)) {
+    if (ALG_AES_IV_LEN != EVP_CIPHER_CTX_get_iv_length(ctx)) {
         ALG_WARN("%s(%d): Unsupported IV length :%d\n", __FILE__, __LINE__,
-                 EVP_CIPHER_CTX_iv_length(ctx));
+                 EVP_CIPHER_CTX_get_iv_length(ctx));
         return 0;
     }
 
@@ -588,8 +620,9 @@ static int afalg_cipher_init(EVP_CIPHER_CTX *ctx, const unsigned char *key,
     if (ret < 1)
         return 0;
 
-
-    ret = afalg_set_key(actx, key, EVP_CIPHER_CTX_key_length(ctx));
+    if ((len = EVP_CIPHER_CTX_get_key_length(ctx)) <= 0)
+        goto err;
+    ret = afalg_set_key(actx, key, len);
     if (ret < 1)
         goto err;
 
@@ -635,14 +668,14 @@ static int afalg_do_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
      * set iv now for decrypt operation as the input buffer can be
      * overwritten for inplace operation where in = out.
      */
-    if (EVP_CIPHER_CTX_encrypting(ctx) == 0) {
+    if (EVP_CIPHER_CTX_is_encrypting(ctx) == 0) {
         memcpy(nxtiv, in + (inl - ALG_AES_IV_LEN), ALG_AES_IV_LEN);
     }
 
     /* Send input data to kernel space */
     ret = afalg_start_cipher_sk(actx, (unsigned char *)in, inl,
                                 EVP_CIPHER_CTX_iv(ctx),
-                                EVP_CIPHER_CTX_encrypting(ctx));
+                                EVP_CIPHER_CTX_is_encrypting(ctx));
     if (ret < 1) {
         return 0;
     }
@@ -652,7 +685,7 @@ static int afalg_do_cipher(EVP_CIPHER_CTX *ctx, unsigned char *out,
     if (ret < 1)
         return 0;
 
-    if (EVP_CIPHER_CTX_encrypting(ctx)) {
+    if (EVP_CIPHER_CTX_is_encrypting(ctx)) {
         memcpy(EVP_CIPHER_CTX_iv_noconst(ctx), out + (inl - ALG_AES_IV_LEN),
                ALG_AES_IV_LEN);
     } else {
@@ -673,11 +706,8 @@ static int afalg_cipher_cleanup(EVP_CIPHER_CTX *ctx)
     }
 
     actx = (afalg_ctx *) EVP_CIPHER_CTX_get_cipher_data(ctx);
-    if (actx == NULL || actx->init_done != MAGIC_INIT_NUM) {
-        ALG_WARN("%s afalg ctx passed\n",
-                 ctx == NULL ? "NULL" : "Uninitialised");
-        return 0;
-    }
+    if (actx == NULL || actx->init_done != MAGIC_INIT_NUM)
+        return 1;
 
     close(actx->sfd);
     close(actx->bfd);
@@ -780,7 +810,7 @@ static int bind_afalg(ENGINE *e)
      * now, as bind_aflag can only be called by one thread at a
      * time.
      */
-    for(i = 0; i < OSSL_NELEM(afalg_cipher_nids); i++) {
+    for (i = 0; i < OSSL_NELEM(afalg_cipher_nids); i++) {
         if (afalg_aes_cbc(afalg_cipher_nids[i]) == NULL) {
             AFALGerr(AFALG_F_BIND_AFALG, AFALG_R_INIT_FAILED);
             return 0;
@@ -909,7 +939,7 @@ static int afalg_finish(ENGINE *e)
 static int free_cbc(void)
 {
     short unsigned int i;
-    for(i = 0; i < OSSL_NELEM(afalg_cipher_nids); i++) {
+    for (i = 0; i < OSSL_NELEM(afalg_cipher_nids); i++) {
         EVP_CIPHER_meth_free(cbc_handle[i]._hidden);
         cbc_handle[i]._hidden = NULL;
     }

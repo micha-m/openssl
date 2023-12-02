@@ -1,5 +1,5 @@
 /*
- * Copyright 2018-2021 The OpenSSL Project Authors. All Rights Reserved.
+ * Copyright 2018-2023 The OpenSSL Project Authors. All Rights Reserved.
  *
  * Licensed under the Apache License 2.0 (the "License").  You may not use
  * this file except in compliance with the License.  You can obtain a copy
@@ -146,6 +146,7 @@ static int blake2_mac_final(void *vmacctx,
 
 static const OSSL_PARAM known_gettable_ctx_params[] = {
     OSSL_PARAM_size_t(OSSL_MAC_PARAM_SIZE, NULL),
+    OSSL_PARAM_size_t(OSSL_MAC_PARAM_BLOCK_SIZE, NULL),
     OSSL_PARAM_END
 };
 static const OSSL_PARAM *blake2_gettable_ctx_params(ossl_unused void *ctx,
@@ -158,8 +159,13 @@ static int blake2_get_ctx_params(void *vmacctx, OSSL_PARAM params[])
 {
     OSSL_PARAM *p;
 
-    if ((p = OSSL_PARAM_locate(params, OSSL_MAC_PARAM_SIZE)) != NULL)
-        return OSSL_PARAM_set_size_t(p, blake2_mac_size(vmacctx));
+    if ((p = OSSL_PARAM_locate(params, OSSL_MAC_PARAM_SIZE)) != NULL
+            && !OSSL_PARAM_set_size_t(p, blake2_mac_size(vmacctx)))
+        return 0;
+
+    if ((p = OSSL_PARAM_locate(params, OSSL_MAC_PARAM_BLOCK_SIZE)) != NULL
+            && !OSSL_PARAM_set_size_t(p, BLAKE2_BLOCKBYTES))
+        return 0;
 
     return 1;
 }
@@ -244,5 +250,5 @@ const OSSL_DISPATCH BLAKE2_FUNCTIONS[] = {
     { OSSL_FUNC_MAC_SETTABLE_CTX_PARAMS,
       (void (*)(void))blake2_mac_settable_ctx_params },
     { OSSL_FUNC_MAC_SET_CTX_PARAMS, (void (*)(void))blake2_mac_set_ctx_params },
-    { 0, NULL }
+    OSSL_DISPATCH_END
 };
